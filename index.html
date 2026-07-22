@@ -88,8 +88,21 @@
         : DEFAULT_CONFLICT_CONDITIONS,
       resolutionOptions: Array.isArray(scenario?.resolutionOptions) && scenario.resolutionOptions.length
         ? scenario.resolutionOptions
-        : DEFAULT_RESOLUTION_OPTIONS
+        : DEFAULT_RESOLUTION_OPTIONS,
+      conflictOverrides: Array.isArray(scenario?.conflictOverrides) ? scenario.conflictOverrides : []
     });
+
+    // Find a specific override for a given conflict (match on policy, optionally party names)
+    const findConflictOverride = (conflict, overrides) => {
+      if (!Array.isArray(overrides) || !overrides.length) return null;
+      return overrides.find(ov => {
+        const policyMatch = (ov.policy || '').trim().toLowerCase() === (conflict.policy || '').trim().toLowerCase();
+        if (!policyMatch) return false;
+        const p1Match = !ov.party1 || ov.party1.trim().toLowerCase() === conflict.party1Name.toLowerCase();
+        const p2Match = !ov.party2 || ov.party2.trim().toLowerCase() === conflict.party2Name.toLowerCase();
+        return p1Match && p2Match;
+      }) || null;
+    };
 
     const applyTemplate = (template, data) =>
       String(template || '')
@@ -263,7 +276,14 @@
       const isLastConflict = currentConflictIdx === conflicts.length - 1;
       const progressPercent = ((currentConflictIdx + 1) / conflicts.length) * 100;
 
-      const decisionOptions = (scenario.resolutionOptions || DEFAULT_RESOLUTION_OPTIONS).map(option => ({
+      // Check for a specific override for this exact conflict
+      const activeOverride = findConflictOverride(currentConflict, scenario.conflictOverrides);
+      const activeResolutionPool = (activeOverride?.resolutionOptions?.length ? activeOverride.resolutionOptions : null)
+        || scenario.resolutionOptions
+        || DEFAULT_RESOLUTION_OPTIONS;
+      const activeDescription = activeOverride?.description || null;
+
+      const decisionOptions = activeResolutionPool.map(option => ({
         id: option.id,
         title: applyTemplate(option.titleTemplate, currentConflict),
         effect: applyTemplate(option.effectTemplate, currentConflict),
@@ -299,7 +319,11 @@
             </div>
 
             <div className="conflict-description">
-              {currentConflict.party1Name} demands the policy <strong>"{currentConflict.policy}"</strong> be included in the government platform, but this violates {currentConflict.party2Name}'s red lines. How should the coalition resolve this?
+              {activeDescription
+                ? <span>{activeDescription}</span>
+                : <span>{currentConflict.party1Name} demands the policy <strong>"{currentConflict.policy}"</strong> be included in the government platform, but this violates {currentConflict.party2Name}'s red lines. How should the coalition resolve this?</span>
+              }
+              {activeOverride && <div className="mt-2 text-xs text-blue-500 font-semibold">📌 Custom conflict scenario</div>}
             </div>
 
             <div className="decision-options">
@@ -403,8 +427,68 @@
 
       const defaultScenarioConfig = () => ({
         conflictConditions: JSON.parse(JSON.stringify(DEFAULT_CONFLICT_CONDITIONS)),
-        resolutionOptions: JSON.parse(JSON.stringify(DEFAULT_RESOLUTION_OPTIONS))
+        resolutionOptions: JSON.parse(JSON.stringify(DEFAULT_RESOLUTION_OPTIONS)),
+        conflictOverrides: []
       });
+
+      // ---- Conflict Override CRUD ----
+      const ensureOverrides = (targetDb) => {
+        const s = targetDb?.[activeC]?.[activeS];
+        if (s && !Array.isArray(s.conflictOverrides)) s.conflictOverrides = [];
+        return targetDb;
+      };
+
+      const addConflictOverride = () => {
+        const newDb = ensureOverrides({ ...db });
+        newDb[activeC][activeS].conflictOverrides.push({
+          id: `override-${Date.now()}`,
+          policy: '',
+          party1: '',
+          party2: '',
+          description: '',
+          resolutionOptions: JSON.parse(JSON.stringify(DEFAULT_RESOLUTION_OPTIONS))
+        });
+        updateDb(newDb);
+      };
+
+      const removeConflictOverride = (oIdx) => {
+        const newDb = ensureOverrides({ ...db });
+        newDb[activeC][activeS].conflictOverrides.splice(oIdx, 1);
+        updateDb(newDb);
+      };
+
+      const updateConflictOverride = (oIdx, field, value) => {
+        const newDb = ensureOverrides({ ...db });
+        newDb[activeC][activeS].conflictOverrides[oIdx][field] = value;
+        updateDb(newDb);
+      };
+
+      const addOverrideResolutionOption = (oIdx) => {
+        const newDb = ensureOverrides({ ...db });
+        newDb[activeC][activeS].conflictOverrides[oIdx].resolutionOptions.push({
+          id: `option-${Date.now()}`,
+          label: 'New Option',
+          titleTemplate: 'Custom option for "{policy}"',
+          effectTemplate: '{party1} and {party2} agree on a custom outcome for "{policy}".',
+          summaryText: 'Custom outcome agreed'
+        });
+        updateDb(newDb);
+      };
+
+      const removeOverrideResolutionOption = (oIdx, rIdx) => {
+        const newDb = ensureOverrides({ ...db });
+        newDb[activeC][activeS].conflictOverrides[oIdx].resolutionOptions.splice(rIdx, 1);
+        updateDb(newDb);
+      };
+
+      const updateOverrideResolutionOption = (oIdx, rIdx, field, value) => {
+        const newDb = ensureOverrides({ ...db });
+        newDb[activeC][activeS].conflictOverrides[oIdx].resolutionOptions[rIdx][field] = value;
+        updateDb(newDb);
+      };
+
+      const [expandedOverrides, setExpandedOverrides] = useState({});
+      const toggleOverride = (id) => setExpandedOverrides(prev => ({ ...prev, [id]: !prev[id] }));
 
       const ensureActiveScenarioConfigInDb = (targetDb) => {
         const scenario = targetDb?.[activeC]?.[activeS];
@@ -503,7 +587,7 @@
 
       const activeScenarioConfig = activeC && activeS && db[activeC] && db[activeC][activeS]
         ? ensureScenarioConfig(db[activeC][activeS])
-        : { conflictConditions: [], resolutionOptions: [] };
+        : { conflictConditions: [], resolutionOptions: [], conflictOverrides: [] };
 
       return (
         <div className="min-h-screen bg-slate-900 text-slate-200 flex flex-col font-sans">
@@ -682,7 +766,7 @@
 
                     <div className="mt-4 bg-slate-800 p-4 rounded-lg border border-slate-700">
                       <div className="flex justify-between items-center mb-3">
-                        <h3 className="text-lg font-bold text-white">Negotiation Resolution Options</h3>
+                        <h3 className="text-lg font-bold text-white">Default Resolution Options</h3>
                         <button onClick={addResolutionOption} className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded text-sm font-bold">+ Add Resolution</button>
                       </div>
                       <p className="text-xs text-slate-400 mb-3">Use placeholders: {'{policy}'}, {'{party1}'}, {'{party2}'}</p>
@@ -716,6 +800,94 @@
                             </div>
                           </div>
                         ))}
+                      </div>
+                    </div>
+                    <div className="mt-4 bg-indigo-950 p-4 rounded-lg border border-indigo-700">
+                      <div className="flex justify-between items-center mb-3">
+                        <div>
+                          <h3 className="text-lg font-bold text-white">Specific Conflict Overrides</h3>
+                          <p className="text-xs text-indigo-300 mt-1">Override description and resolution options for a specific policy conflict.</p>
+                        </div>
+                        <button onClick={addConflictOverride} className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1 rounded text-sm font-bold whitespace-nowrap">+ Add Override</button>
+                      </div>
+                      <div className="space-y-3">
+                        {activeScenarioConfig.conflictOverrides.map((ov, oIdx) => (
+                          <div key={ov.id || oIdx} className="bg-slate-900 rounded border border-indigo-800">
+                            <div className="flex items-center justify-between px-3 py-2 cursor-pointer" onClick={() => toggleOverride(ov.id || oIdx)}>
+                              <div className="flex items-center gap-3">
+                                <span className="text-indigo-400 font-bold text-sm">{expandedOverrides[ov.id || oIdx] ? '▼' : '▶'}</span>
+                                <span className="text-white font-semibold text-sm">
+                                  {ov.policy ? `"${ov.policy}"` : '(new override)'}
+                                  {ov.party1 || ov.party2 ? <span className="text-indigo-300 font-normal ml-2 text-xs">
+                                    [{ov.party1 || '...'} → {ov.party2 || '...'}]
+                                  </span> : null}
+                                </span>
+                              </div>
+                              <button onClick={(e) => { e.stopPropagation(); removeConflictOverride(oIdx); }} className="text-red-400 hover:text-red-300 text-xs font-bold px-2 py-1 rounded hover:bg-red-900/40">Remove</button>
+                            </div>
+                            {expandedOverrides[ov.id || oIdx] && (
+                              <div className="px-3 pb-3 border-t border-indigo-900 pt-3 space-y-3">
+                                <div className="grid grid-cols-12 gap-2">
+                                  <div className="col-span-4">
+                                    <label className="text-[10px] uppercase text-indigo-400 font-bold block mb-1">Policy Keyword (required)</label>
+                                    <input type="text" value={ov.policy || ''} placeholder="e.g. secularism" onChange={(e) => updateConflictOverride(oIdx, 'policy', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-indigo-700 text-white placeholder:text-slate-600"/>
+                                  </div>
+                                  <div className="col-span-4">
+                                    <label className="text-[10px] uppercase text-indigo-400 font-bold block mb-1">Demanding Party (optional)</label>
+                                    <input type="text" value={ov.party1 || ''} placeholder="e.g. Yesh Atid" onChange={(e) => updateConflictOverride(oIdx, 'party1', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-indigo-700 text-white placeholder:text-slate-600"/>
+                                  </div>
+                                  <div className="col-span-4">
+                                    <label className="text-[10px] uppercase text-indigo-400 font-bold block mb-1">Blocking Party (optional)</label>
+                                    <input type="text" value={ov.party2 || ''} placeholder="e.g. Shas" onChange={(e) => updateConflictOverride(oIdx, 'party2', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-indigo-700 text-white placeholder:text-slate-600"/>
+                                  </div>
+                                  <div className="col-span-12">
+                                    <label className="text-[10px] uppercase text-indigo-400 font-bold block mb-1">Custom Conflict Description</label>
+                                    <textarea value={ov.description || ''} rows={3} placeholder="Describe this specific conflict in your own words..." onChange={(e) => updateConflictOverride(oIdx, 'description', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-indigo-700 text-white placeholder:text-slate-600 resize-none"/>
+                                  </div>
+                                </div>
+                                <div className="mt-2">
+                                  <div className="flex justify-between items-center mb-2">
+                                    <label className="text-[10px] uppercase text-indigo-400 font-bold">Resolution Options for this conflict</label>
+                                    <button onClick={() => addOverrideResolutionOption(oIdx)} className="bg-indigo-700 hover:bg-indigo-600 text-white px-2 py-1 rounded text-xs font-bold">+ Option</button>
+                                  </div>
+                                  <div className="space-y-2">
+                                    {(ov.resolutionOptions || []).map((opt, rIdx) => (
+                                      <div key={opt.id || rIdx} className="bg-indigo-950/60 rounded p-2 border border-indigo-800">
+                                        <div className="grid grid-cols-12 gap-2 items-start">
+                                          <div className="col-span-3">
+                                            <label className="text-[9px] uppercase text-indigo-400 font-bold block mb-1">Label</label>
+                                            <input type="text" value={opt.label || ''} onChange={(e) => updateOverrideResolutionOption(oIdx, rIdx, 'label', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-indigo-700 text-white"/>
+                                          </div>
+                                          <div className="col-span-5">
+                                            <label className="text-[9px] uppercase text-indigo-400 font-bold block mb-1">Title Template</label>
+                                            <input type="text" value={opt.titleTemplate || ''} onChange={(e) => updateOverrideResolutionOption(oIdx, rIdx, 'titleTemplate', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-indigo-700 text-white"/>
+                                          </div>
+                                          <div className="col-span-4">
+                                            <label className="text-[9px] uppercase text-indigo-400 font-bold block mb-1">Summary Text</label>
+                                            <input type="text" value={opt.summaryText || ''} onChange={(e) => updateOverrideResolutionOption(oIdx, rIdx, 'summaryText', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-indigo-700 text-white"/>
+                                          </div>
+                                          <div className="col-span-11">
+                                            <label className="text-[9px] uppercase text-indigo-400 font-bold block mb-1">Effect Template ({'{policy}'}, {'{party1}'}, {'{party2}'})</label>
+                                            <input type="text" value={opt.effectTemplate || ''} onChange={(e) => updateOverrideResolutionOption(oIdx, rIdx, 'effectTemplate', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-indigo-700 text-white"/>
+                                          </div>
+                                          <div className="col-span-1 flex items-end justify-end">
+                                            <button onClick={() => removeOverrideResolutionOption(oIdx, rIdx)} className="text-red-400 hover:text-red-300 text-lg leading-none">✕</button>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ))}
+                                    {(ov.resolutionOptions || []).length === 0 && (
+                                      <p className="text-xs text-indigo-500 italic">No options yet — defaults will be used. Add options above to override.</p>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        {activeScenarioConfig.conflictOverrides.length === 0 && (
+                          <p className="text-xs text-indigo-500 italic">No overrides yet. Click '+ Add Override' to create one.</p>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1073,7 +1245,12 @@
                   <h4 className="font-bold text-gray-500 uppercase text-xs tracking-wider mb-3">Negotiated Decisions</h4>
                   <div className="space-y-2">
                     {Object.entries(decisions).map(([conflictId, decision]) => {
-                      const option = (activeScenarioData.resolutionOptions || []).find(o => o.id === decision);
+                      // Find the conflict to look up its override (if any)
+                      const allConflicts = buildCoalitionConflicts(coalitionMembers, activeScenarioData.conflictConditions);
+                      const matchedConflict = allConflicts.find(c => c.id === conflictId);
+                      const ov = matchedConflict ? findConflictOverride(matchedConflict, activeScenarioData.conflictOverrides) : null;
+                      const optionPool = ov?.resolutionOptions?.length ? ov.resolutionOptions : (activeScenarioData.resolutionOptions || []);
+                      const option = optionPool.find(o => o.id === decision);
                       return (
                       <div key={conflictId} className="coalition-agreement-item" style={{ borderColor: '#3b82f6' }}>
                         <span className="text-lg">✓</span>
