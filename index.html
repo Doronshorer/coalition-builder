@@ -957,14 +957,12 @@
                           </div>
 
                           <div className="col-span-5 flex flex-col gap-2">
-                            <div>
-                              <label className="text-[10px] font-bold text-slate-500 uppercase block">Core Policies (Comma separated)</label>
-                              <input type="text" value={party.corePolicies} placeholder="e.g. Welfare, Free Trade" onChange={(e) => updateParty(party.id, 'corePolicies', e.target.value)} className="w-full bg-slate-900 text-slate-300 text-xs p-2 rounded border border-slate-700 outline-none"/>
+                            <div className="text-[10px] font-bold text-cyan-400 uppercase">Policies Are Tag-Based</div>
+                            <div className="bg-slate-900/70 border border-slate-700 rounded p-2 text-[11px] text-slate-400">
+                              Use the Demand/Blocking tags below to edit policy positions.
                             </div>
-                            <div>
-                              <label className="text-[10px] font-bold text-rose-500 uppercase block">Red Lines (Must match policies)</label>
-                              <input type="text" value={party.redLines} placeholder="e.g. Wealth Tax" onChange={(e) => updateParty(party.id, 'redLines', e.target.value)} className="w-full bg-rose-950/30 text-rose-300 text-xs p-2 rounded border border-rose-900/50 outline-none"/>
-                            </div>
+                            <div className="text-[10px] text-slate-500">Demand Tags: {splitTagEntries(party.corePolicies).length}</div>
+                            <div className="text-[10px] text-slate-500">Blocking Tags: {splitTagEntries(party.redLines).length}</div>
                           </div>
 
                           <div className="col-span-12 mt-2 pt-3 border-t border-slate-700/60">
@@ -1448,6 +1446,22 @@
         };
 
         const updateParty = (id, field, value) => setParties(parties.map(p => p.id === id ? { ...p, [field]: value } : p));
+        const scenarioPolicyLibrary = selectedCountry && selectedScenario && db[selectedCountry] && db[selectedCountry][selectedScenario]
+          ? ensureScenarioConfig(db[selectedCountry][selectedScenario]).policyLibrary
+          : DEFAULT_POLICY_LIBRARY;
+
+        const togglePartySettingTag = (id, field, label) => {
+          setParties(parties.map(p => {
+            if (p.id !== id) return p;
+            const current = splitTagEntries(p[field]);
+            const hasTag = current.some(item => normalizeKey(item) === normalizeKey(label));
+            const next = hasTag
+              ? current.filter(item => normalizeKey(item) !== normalizeKey(label))
+              : [...current, label];
+            return { ...p, [field]: next.join(', ') };
+          }));
+        };
+
         const addParty = () => {
           const newId = parties.length ? Math.max(...parties.map(p => p.id)) + 1 : 1;
           setParties([...parties, { id: newId, name: 'New Party', color: '#94a3b8', logo: '⬜', corePolicies: '', redLines: '', votes: 0, poll: 0 }]);
@@ -1496,13 +1510,41 @@
                       <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Base Poll %</label>
                       <input type="number" step="0.1" value={party.poll} onChange={(e) => { updateParty(party.id, 'poll', e.target.value); updateParty(party.id, 'votes', e.target.value); }} className="w-full p-2 border rounded bg-blue-50 font-mono text-blue-900"/>
                     </div>
-                    <div className="col-span-3">
-                      <label className="block text-xs font-bold text-gray-500 uppercase mb-1">Core Demands</label>
-                      <input type="text" value={party.corePolicies} placeholder="e.g., Free Trade" onChange={(e) => updateParty(party.id, 'corePolicies', e.target.value)} className="w-full p-2 border rounded bg-gray-50"/>
+                    <div className="col-span-5">
+                      <label className="block text-xs font-bold text-cyan-700 uppercase mb-1">Demand Tags</label>
+                      <div className="flex flex-wrap gap-1 p-2 border rounded bg-cyan-50 min-h-[44px]">
+                        {scenarioPolicyLibrary.map((policyTag, idx) => {
+                          const selected = parseTags(party.corePolicies).includes(normalizeKey(policyTag.label));
+                          return (
+                            <button
+                              key={`settings-demand-${party.id}-${policyTag.id || idx}`}
+                              type="button"
+                              onClick={() => togglePartySettingTag(party.id, 'corePolicies', policyTag.label)}
+                              className={`px-2 py-1 rounded-full text-[11px] border ${selected ? 'bg-cyan-600 text-white border-cyan-500' : 'bg-white text-gray-700 border-cyan-200 hover:border-cyan-400'}`}
+                            >
+                              {policyTag.label}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                    <div className="col-span-2">
-                      <label className="block text-xs font-bold text-red-500 uppercase mb-1">Red Lines</label>
-                      <input type="text" value={party.redLines} placeholder="e.g., Wealth Tax" onChange={(e) => updateParty(party.id, 'redLines', e.target.value)} className="w-full p-2 border rounded border-red-200 bg-red-50"/>
+                    <div className="col-span-5">
+                      <label className="block text-xs font-bold text-rose-600 uppercase mb-1">Blocking Tags</label>
+                      <div className="flex flex-wrap gap-1 p-2 border rounded bg-rose-50 min-h-[44px]">
+                        {scenarioPolicyLibrary.map((policyTag, idx) => {
+                          const selected = parseTags(party.redLines).includes(normalizeKey(policyTag.label));
+                          return (
+                            <button
+                              key={`settings-block-${party.id}-${policyTag.id || idx}`}
+                              type="button"
+                              onClick={() => togglePartySettingTag(party.id, 'redLines', policyTag.label)}
+                              className={`px-2 py-1 rounded-full text-[11px] border ${selected ? 'bg-rose-700 text-white border-rose-600' : 'bg-white text-gray-700 border-rose-200 hover:border-rose-400'}`}
+                            >
+                              {policyTag.label}
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
                     <div className="col-span-1 flex items-end">
                       <button onClick={() => removeParty(party.id)} className="w-full p-2 bg-gray-100 text-gray-500 rounded hover:bg-red-100 hover:text-red-600 transition-colors">✕</button>
