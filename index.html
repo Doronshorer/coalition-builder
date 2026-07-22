@@ -223,6 +223,54 @@
 
     const normalizeKey = (value) => String(value || '').trim().toLowerCase();
 
+    const slugifyId = (value) =>
+      String(value || '')
+        .trim()
+        .toLowerCase()
+        .replaceAll(/[^a-z0-9]+/g, '-')
+        .replaceAll(/(^-|-$)/g, '') || 'tag';
+
+    const hydrateScenarioPolicyLibrary = (scenario) => {
+      const config = ensureScenarioConfig(scenario || {});
+      const policyLibrary = JSON.parse(JSON.stringify(config.policyLibrary || []));
+      const existing = new Set();
+
+      policyLibrary.forEach((item) => {
+        if (item?.id) existing.add(normalizeKey(item.id));
+        if (item?.label) existing.add(normalizeKey(item.label));
+        splitTagEntries(item?.aliases || '').forEach((alias) => existing.add(normalizeKey(alias)));
+      });
+
+      (config.parties || []).forEach((party) => {
+        ['corePolicies', 'redLines'].forEach((field) => {
+          splitTagEntries(party?.[field]).forEach((tag) => {
+            const key = normalizeKey(tag);
+            if (!key || existing.has(key)) return;
+            existing.add(key);
+            policyLibrary.push({
+              id: `policy-${slugifyId(tag)}`,
+              label: tag,
+              aliases: '',
+              rules: []
+            });
+          });
+        });
+      });
+
+      return { ...config, policyLibrary };
+    };
+
+    const buildExportDb = (db) => {
+      const nextDb = {};
+      Object.entries(db || {}).forEach(([country, scenarios]) => {
+        nextDb[country] = {};
+        Object.entries(scenarios || {}).forEach(([scenarioName, scenario]) => {
+          nextDb[country][scenarioName] = hydrateScenarioPolicyLibrary(scenario);
+        });
+      });
+      return nextDb;
+    };
+
     const resolvePolicyTag = (policyName, policyLibrary) => {
       const key = normalizeKey(policyName);
       return (policyLibrary || []).find((item) => {
@@ -405,7 +453,7 @@
 
     function NegotiationPhase({ seatShares, coalition, coalitionMembers, handleDecision, decisions, db, selectedCountry, selectedScenario }) {
       const [currentConflictIdx, setCurrentConflictIdx] = useState(0);
-      const scenario = ensureScenarioConfig(db?.[selectedCountry]?.[selectedScenario] || {});
+      const scenario = hydrateScenarioPolicyLibrary(db?.[selectedCountry]?.[selectedScenario] || {});
       const conflicts = buildCoalitionConflicts(coalitionMembers, scenario.conflictConditions, scenario.policyLibrary);
 
       if (conflicts.length === 0) {
@@ -844,7 +892,7 @@
       };
 
       const activeScenarioConfig = activeC && activeS && db[activeC] && db[activeC][activeS]
-        ? ensureScenarioConfig(db[activeC][activeS])
+        ? hydrateScenarioPolicyLibrary(db[activeC][activeS])
         : { conflictConditions: [], resolutionOptions: [], conflictOverrides: [], policyLibrary: [] };
 
       return (
@@ -864,7 +912,7 @@
                 <p className="text-slate-400 mb-4 text-sm leading-relaxed">
                   Click inside the box below, press <strong>Ctrl+A</strong> to select all, and copy it. Then, paste it over the <code>INITIAL_DB</code> section at the top of your <code>index.html</code> file and redeploy.
                 </p>
-                <textarea readOnly value={`window.INITIAL_DB = ${JSON.stringify(db, null, 2)};`} className="w-full h-80 bg-slate-950 text-emerald-400 p-4 font-mono text-xs rounded border border-slate-700 outline-none mb-4 selection:bg-emerald-900"></textarea>
+                <textarea readOnly value={`window.INITIAL_DB = ${JSON.stringify(buildExportDb(db), null, 2)};`} className="w-full h-80 bg-slate-950 text-emerald-400 p-4 font-mono text-xs rounded border border-slate-700 outline-none mb-4 selection:bg-emerald-900"></textarea>
                 <div className="flex justify-end">
                   <button onClick={() => setShowExport(false)} className="bg-slate-600 hover:bg-slate-500 px-6 py-2 rounded font-bold text-white">Close Window</button>
                 </div>
@@ -1369,7 +1417,7 @@
       const isMajority = coalitionSeats >= majorityTarget;
 
       // Conflicts
-      const activeScenarioData = ensureScenarioConfig(db?.[selectedCountry]?.[selectedScenario] || {});
+      const activeScenarioData = hydrateScenarioPolicyLibrary(db?.[selectedCountry]?.[selectedScenario] || {});
       const coalitionMembers = seatShares.filter(p => coalition.includes(p.id));
       const coalitionConflictDetails = buildCoalitionConflicts(coalitionMembers, activeScenarioData.conflictConditions, activeScenarioData.policyLibrary);
       const conflicts = coalitionConflictDetails.map(c => `Conflict: ${c.party1Name} demands "${c.policy}", violating ${c.party2Name}'s constraints. (${c.conditionDescription})`);
@@ -1447,7 +1495,7 @@
 
         const updateParty = (id, field, value) => setParties(parties.map(p => p.id === id ? { ...p, [field]: value } : p));
         const scenarioPolicyLibrary = selectedCountry && selectedScenario && db[selectedCountry] && db[selectedCountry][selectedScenario]
-          ? ensureScenarioConfig(db[selectedCountry][selectedScenario]).policyLibrary
+          ? hydrateScenarioPolicyLibrary(db[selectedCountry][selectedScenario]).policyLibrary
           : DEFAULT_POLICY_LIBRARY;
 
         const togglePartySettingTag = (id, field, label) => {
