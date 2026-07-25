@@ -1,0 +1,1905 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Coalition Builder</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body class="min-h-screen">
+  <div id="root"></div>
+
+  <script>
+    window.INITIAL_DB = {};
+    window.GITHUB_DB_CONFIG = {
+      owner: 'Doronshorer',
+      repo: 'coalition-builder',
+      branch: 'main',
+      filePath: 'data/default-db.json'
+    };
+
+    async function loadInitialDb() {
+      const fallbackDb = {
+        "Israel": {
+          "2026 Polling Snapshot": {
+            "seats": 120,
+            "threshold": 3.25,
+            "parties": [
+              { "id": 1, "name": "Likud", "color": "#1f2937", "logo": "🟦", "corePolicies": "Conservatism", "redLines": "Two-State Solution", "poll": 22, "votes": 22 },
+              { "id": 2, "name": "National Unity", "color": "#16a34a", "logo": "🤝", "corePolicies": "Centrism", "redLines": "Judicial Overhaul", "poll": 16, "votes": 16 },
+              { "id": 3, "name": "Yesh Atid", "color": "#0284c7", "logo": "✡️", "corePolicies": "Secularism", "redLines": "Haredi Draft Exemption", "poll": 13, "votes": 13 },
+              { "id": 4, "name": "Democrats", "color": "#dc2626", "logo": "🕊️", "corePolicies": "Social Democracy", "redLines": "Annexation", "poll": 11, "votes": 11 },
+              { "id": 5, "name": "Yisrael Beiteinu", "color": "#2563eb", "logo": "🦅", "corePolicies": "Secular Nationalism", "redLines": "Haredi Draft Exemption", "poll": 10, "votes": 10 },
+              { "id": 6, "name": "Shas", "color": "#000000", "logo": "🕍", "corePolicies": "Welfare", "redLines": "Secularism", "poll": 9, "votes": 9 },
+              { "id": 7, "name": "Otzma Yehudit", "color": "#ea580c", "logo": "🔥", "corePolicies": "Far-Right", "redLines": "Palestinian State", "poll": 6, "votes": 6 },
+              { "id": 8, "name": "UTJ", "color": "#4b5563", "logo": "📜", "corePolicies": "Haredi Interests", "redLines": "Secularism", "poll": 7, "votes": 7 },
+              { "id": 9, "name": "Hadash-Ta'al", "color": "#ef4444", "logo": "🔴", "corePolicies": "Arab Interests", "redLines": "Zionism", "poll": 5, "votes": 5 },
+              { "id": 10, "name": "Ra'am", "color": "#22c55e", "logo": "🕌", "corePolicies": "Islamism", "redLines": "Settlement Expansion", "poll": 5, "votes": 5 }
+            ]
+          }
+        }
+      };
+
+      try {
+        const cfg = window.GITHUB_DB_CONFIG || {};
+        const response = await fetch(`https://raw.githubusercontent.com/${cfg.owner || 'Doronshorer'}/${cfg.repo || 'coalition-builder'}/${cfg.branch || 'main'}/${cfg.filePath || 'data/default-db.json'}`, { cache: 'no-store' });
+        if (!response.ok) throw new Error('Remote DB unavailable');
+        const remoteDb = await response.json();
+        if (remoteDb && typeof remoteDb === 'object') {
+          window.INITIAL_DB = remoteDb;
+          return;
+        }
+      } catch (error) {
+        console.warn('Falling back to bundled default DB', error);
+      }
+
+      window.INITIAL_DB = fallbackDb;
+    }
+
+    window.loadInitialDb = loadInitialDb;
+    window.addEventListener('DOMContentLoaded', () => {
+      loadInitialDb();
+    });
+  </script>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+
+    // ============================================
+    // HELPER FUNCTIONS
+    // ============================================
+
+    const splitTagEntries = (str) => (str || '').split(',').map(s => s.trim()).filter(s => s);
+    const parseTags = (str) => splitTagEntries(str).map(s => s.toLowerCase());
+
+    const DEFAULT_CONFLICT_CONDITIONS = [
+      {
+        id: 'core-vs-red',
+        leftField: 'corePolicies',
+        rightField: 'redLines',
+        description: 'Core policy conflicts with red lines',
+        bidirectional: true
+      }
+    ];
+
+    const DEFAULT_RESOLUTION_OPTIONS = [
+      {
+        id: 'support',
+        label: 'Include Policy',
+        titleTemplate: 'Include "{policy}"',
+        effectTemplate: "{party1}'s core demand is accepted into the government platform. {party2} must compromise.",
+        summaryText: 'Policy demand from one party accepted'
+      },
+      {
+        id: 'drop',
+        label: 'Exclude Policy',
+        titleTemplate: 'Exclude "{policy}"',
+        effectTemplate: 'The policy is dropped from the government platform. {party1} accepts the exclusion.',
+        summaryText: 'Contested policy dropped from platform'
+      },
+      {
+        id: 'compromise',
+        label: 'Compromise Version',
+        titleTemplate: 'Modified/Compromise Version',
+        effectTemplate: 'A compromise version of "{policy}" is negotiated that both parties can accept.',
+        summaryText: 'Compromise version negotiated between parties'
+      }
+    ];
+
+    const ALWAYS_IMPASSE_POLICIES = new Set([
+      'haredi draft exemption',
+      'palestinian state',
+      'far-right',
+      'islamism',
+      'annexation',
+      'judicial overhaul',
+      'zionism'
+    ]);
+
+    const ALWAYS_NEGOTIATE_POLICIES = new Set([
+      'secularism',
+      'progressivism',
+      'settlement expansion',
+      'conservatism'
+    ]);
+
+    const NETANYAHU_HARD_BLOCKERS = new Set([
+      'democrats',
+      "hadash-ta'al",
+      "ra'am",
+      'yisrael beiteinu'
+    ]);
+
+    const NETANYAHU_NEGOTIABLE_BLOCKERS = new Set([
+      'yashar',
+      'beyachad',
+      'national unity',
+      'ha-miluimnikim',
+      'kachol lavan'
+    ]);
+
+    const NETANYAHU_STEP_DOWN_BLOCKERS = new Set([
+      'yashar',
+      'beyachad',
+      'national unity'
+    ]);
+
+    const cloneResolutionOptions = () => JSON.parse(JSON.stringify(DEFAULT_RESOLUTION_OPTIONS));
+
+    const DEFAULT_POLICY_LIBRARY = [
+      ...Array.from(ALWAYS_IMPASSE_POLICIES).map((label) => ({
+        id: label.replaceAll(' ', '-'),
+        label: label === 'palestinian state' ? 'Palestinian state' : label === 'judicial overhaul' ? 'Judicial Overhaul' : label === 'haredi draft exemption' ? 'Haredi Draft Exemption' : label === 'far-right' ? 'Far-Right' : label === 'islamism' ? 'Islamism' : label === 'annexation' ? 'Annexation' : label === 'zionism' ? 'Zionism' : label,
+        aliases: '',
+        rules: [
+          {
+            id: `rule-${label.replaceAll(' ', '-')}-impasse`,
+            demanderParty: '',
+            blockerParty: '',
+            mode: 'impasse',
+            descriptionTemplate: "{party2} is not open to nagotiating {policy}, we're at an impass!",
+            resolutionOptions: []
+          }
+        ]
+      })),
+      ...Array.from(ALWAYS_NEGOTIATE_POLICIES).map((label) => ({
+        id: label.replaceAll(' ', '-'),
+        label: label === 'settlement expansion' ? 'Settlement Expansion' : label === 'progressivism' ? 'Progressivism' : label === 'conservatism' ? 'Conservatism' : 'Secularism',
+        aliases: '',
+        rules: [
+          {
+            id: `rule-${label.replaceAll(' ', '-')}-negotiate`,
+            demanderParty: '',
+            blockerParty: '',
+            mode: 'negotiate',
+            descriptionTemplate: "{party2} rejects {party1}'s policy of {policy}, we must nagotiate!",
+            resolutionOptions: []
+          }
+        ]
+      })),
+      {
+        id: 'benjamin-netanyahu',
+        label: 'Benjamin Netanyahu',
+        aliases: '',
+        rules: [
+          ...Array.from(NETANYAHU_HARD_BLOCKERS).map((party) => ({
+            id: `rule-netanyahu-hard-${party.replaceAll(' ', '-')}`,
+            demanderParty: '',
+            blockerParty: party,
+            mode: 'impasse',
+            descriptionTemplate: "{party2} is not open to nagotiating {policy}, we're at an impass!",
+            resolutionOptions: []
+          })),
+          ...Array.from(NETANYAHU_NEGOTIABLE_BLOCKERS).map((party) => ({
+            id: `rule-netanyahu-negotiate-${party.replaceAll(' ', '-')}`,
+            demanderParty: '',
+            blockerParty: party,
+            mode: 'negotiate',
+            descriptionTemplate: "{party2} rejects {party1}'s policy of {policy}, we must nagotiate!",
+            resolutionOptions: NETANYAHU_STEP_DOWN_BLOCKERS.has(party)
+              ? [
+                  ...cloneResolutionOptions(),
+                  {
+                    id: 'netanyahu-steps-down',
+                    label: 'Netanyahu Steps Down',
+                    titleTemplate: 'Netanyahu steps down, Likud stays',
+                    effectTemplate: '{party2} demands Netanyahu step down and let Likud join the coalition without him.',
+                    summaryText: 'Netanyahu steps down and Likud remains in the coalition'
+                  }
+                ]
+              : []
+          }))
+        ]
+      }
+    ];
+
+    const normalizePolicyLibrary = (rawLibrary) => {
+      const source = Array.isArray(rawLibrary) && rawLibrary.length ? rawLibrary : DEFAULT_POLICY_LIBRARY;
+      const seen = new Set();
+      const normalized = [];
+
+      source.forEach((item, idx) => {
+        const base = typeof item === 'string' ? { label: item } : (item || {});
+        const label = String(base.label || base.id || '').trim();
+        if (!label) return;
+
+        const key = normalizeKey(label);
+        if (seen.has(key)) return;
+        seen.add(key);
+
+        const rules = Array.isArray(base.rules) ? base.rules : [];
+        normalized.push({
+          id: String(base.id || `policy-${slugifyId(label)}-${idx}`),
+          label,
+          aliases: String(base.aliases || ''),
+          rules: rules.map((rule, ruleIdx) => ({
+            id: String(rule?.id || `policy-rule-${slugifyId(label)}-${ruleIdx}`),
+            demanderParty: String(rule?.demanderParty || ''),
+            blockerParty: String(rule?.blockerParty || ''),
+            mode: rule?.mode === 'impasse' ? 'impasse' : 'negotiate',
+            descriptionTemplate: String(rule?.descriptionTemplate || "{party2} rejects {party1}'s policy of {policy}, we must nagotiate!"),
+            resolutionOptions: Array.isArray(rule?.resolutionOptions) ? rule.resolutionOptions : []
+          }))
+        });
+      });
+
+      return normalized;
+    };
+
+    const ensureScenarioConfig = (scenario) => ({
+      ...scenario,
+      conflictConditions: Array.isArray(scenario?.conflictConditions) && scenario.conflictConditions.length
+        ? scenario.conflictConditions
+        : DEFAULT_CONFLICT_CONDITIONS,
+      resolutionOptions: Array.isArray(scenario?.resolutionOptions) && scenario.resolutionOptions.length
+        ? scenario.resolutionOptions
+        : DEFAULT_RESOLUTION_OPTIONS,
+      conflictOverrides: Array.isArray(scenario?.conflictOverrides) ? scenario.conflictOverrides : [],
+      policyLibrary: normalizePolicyLibrary(scenario?.policyLibrary)
+    });
+
+    // Find a specific override for a given conflict (match on policy, optionally party names)
+    const findConflictOverride = (conflict, overrides) => {
+      if (!Array.isArray(overrides) || !overrides.length) return null;
+      return overrides.find(ov => {
+        const policyMatch = (ov.policy || '').trim().toLowerCase() === (conflict.policy || '').trim().toLowerCase();
+        if (!policyMatch) return false;
+        const p1Match = !ov.party1 || ov.party1.trim().toLowerCase() === conflict.party1Name.toLowerCase();
+        const p2Match = !ov.party2 || ov.party2.trim().toLowerCase() === conflict.party2Name.toLowerCase();
+        return p1Match && p2Match;
+      }) || null;
+    };
+
+    const applyTemplate = (template, data) =>
+      String(template || '')
+        .replaceAll('{policy}', data.policy || '')
+        .replaceAll('{party1}', data.party1Name || '')
+        .replaceAll('{party2}', data.party2Name || '');
+
+    const normalizeKey = (value) => String(value || '').trim().toLowerCase();
+
+    const slugifyId = (value) =>
+      String(value || '')
+        .trim()
+        .toLowerCase()
+        .replaceAll(/[^a-z0-9]+/g, '-')
+        .replaceAll(/(^-|-$)/g, '') || 'tag';
+
+    const hydrateScenarioPolicyLibrary = (scenario) => {
+      const config = ensureScenarioConfig(scenario || {});
+      const policyLibrary = JSON.parse(JSON.stringify(normalizePolicyLibrary(config.policyLibrary || [])));
+      const existing = new Set();
+
+      policyLibrary.forEach((item) => {
+        if (item?.id) existing.add(normalizeKey(item.id));
+        if (item?.label) existing.add(normalizeKey(item.label));
+        splitTagEntries(item?.aliases || '').forEach((alias) => existing.add(normalizeKey(alias)));
+      });
+
+      (config.parties || []).forEach((party) => {
+        ['corePolicies', 'redLines'].forEach((field) => {
+          splitTagEntries(party?.[field]).forEach((tag) => {
+            const key = normalizeKey(tag);
+            if (!key || existing.has(key)) return;
+            existing.add(key);
+            policyLibrary.push({
+              id: `policy-${slugifyId(tag)}`,
+              label: tag,
+              aliases: '',
+              rules: []
+            });
+          });
+        });
+      });
+
+      return { ...config, policyLibrary };
+    };
+
+    const buildExportDb = (db) => {
+      const nextDb = {};
+      Object.entries(db || {}).forEach(([country, scenarios]) => {
+        nextDb[country] = {};
+        Object.entries(scenarios || {}).forEach(([scenarioName, scenario]) => {
+          nextDb[country][scenarioName] = hydrateScenarioPolicyLibrary(scenario);
+        });
+      });
+      return nextDb;
+    };
+
+    const resolvePolicyTag = (policyName, policyLibrary) => {
+      const key = normalizeKey(policyName);
+      return (policyLibrary || []).find((item) => {
+        const aliases = splitTagEntries(item.aliases || '').map(normalizeKey);
+        return normalizeKey(item.id) === key || normalizeKey(item.label) === key || aliases.includes(key);
+      }) || null;
+    };
+
+    const getPolicyRuleMatch = (conflict, policyLibrary) => {
+      const policyTag = resolvePolicyTag(conflict?.policy, policyLibrary);
+      if (!policyTag) return null;
+
+      const matches = (policyTag.rules || [])
+        .filter((rule) => {
+          const demanderOk = !rule.demanderParty || normalizeKey(rule.demanderParty) === normalizeKey(conflict.party1Name) || normalizeKey(rule.demanderParty) === '*';
+          const blockerOk = !rule.blockerParty || normalizeKey(rule.blockerParty) === normalizeKey(conflict.party2Name) || normalizeKey(rule.blockerParty) === '*';
+          return demanderOk && blockerOk;
+        })
+        .sort((a, b) => {
+          const score = (rule) => (rule.demanderParty ? 1 : 0) + (rule.blockerParty ? 1 : 0);
+          return score(b) - score(a);
+        });
+
+      if (!matches.length) return null;
+      const rule = matches[0];
+      return {
+        policyTag,
+        rule,
+        type: rule.mode === 'impasse' ? 'impasse' : 'negotiation',
+        description: applyTemplate(rule.descriptionTemplate, { ...conflict, policy: policyTag.label || conflict.policy }),
+        resolutionOptions: Array.isArray(rule.resolutionOptions) && rule.resolutionOptions.length ? rule.resolutionOptions : null
+      };
+    };
+
+    const buildCoalitionConflicts = (coalitionMembers, conflictConditions, policyLibrary = []) => {
+      const conditions = Array.isArray(conflictConditions) && conflictConditions.length
+        ? conflictConditions
+        : DEFAULT_CONFLICT_CONDITIONS;
+      const results = [];
+
+      for (let i = 0; i < coalitionMembers.length; i++) {
+        for (let j = 0; j < coalitionMembers.length; j++) {
+          if (i === j) continue;
+          const p1 = coalitionMembers[i];
+          const p2 = coalitionMembers[j];
+
+          conditions.forEach((condition, conditionIndex) => {
+            const forwardConflicts = parseTags(p1[condition.leftField]).filter(tag =>
+              parseTags(p2[condition.rightField]).includes(tag)
+            );
+
+            forwardConflicts.forEach((policy) => {
+              const policyTag = resolvePolicyTag(policy, policyLibrary);
+              const policyLabel = policyTag?.label || policy;
+              const id = `${condition.id || `condition-${conditionIndex}`}-${p1.id}-${p2.id}-${normalizeKey(policyLabel)}`;
+              if (!results.find(c => c.id === id)) {
+                results.push({
+                  id,
+                  conditionId: condition.id || `condition-${conditionIndex}`,
+                  conditionDescription: condition.description || 'Policy conflict',
+                  party1Id: p1.id,
+                  party2Id: p2.id,
+                  party1Name: p1.name,
+                  party2Name: p2.name,
+                  party1Logo: p1.logo,
+                  party2Logo: p2.logo,
+                  party1Color: p1.color,
+                  party2Color: p2.color,
+                  policy: policyLabel
+                });
+              }
+            });
+
+            if (!condition.bidirectional) return;
+
+            const reverseConflicts = parseTags(p2[condition.leftField]).filter(tag =>
+              parseTags(p1[condition.rightField]).includes(tag)
+            );
+
+            reverseConflicts.forEach((policy) => {
+              const policyTag = resolvePolicyTag(policy, policyLibrary);
+              const policyLabel = policyTag?.label || policy;
+              const id = `${condition.id || `condition-${conditionIndex}`}-${p2.id}-${p1.id}-${normalizeKey(policyLabel)}`;
+              if (!results.find(c => c.id === id)) {
+                results.push({
+                  id,
+                  conditionId: condition.id || `condition-${conditionIndex}`,
+                  conditionDescription: condition.description || 'Policy conflict',
+                  party1Id: p2.id,
+                  party2Id: p1.id,
+                  party1Name: p2.name,
+                  party2Name: p1.name,
+                  party1Logo: p2.logo,
+                  party2Logo: p1.logo,
+                  party1Color: p2.color,
+                  party2Color: p1.color,
+                  policy: policyLabel
+                });
+              }
+            });
+          });
+        }
+      }
+
+      return results;
+    };
+
+    const renderLogo = (logoStr, classes = "w-6 h-6 inline-block") => {
+      if (!logoStr) return '⬜';
+      if (logoStr.startsWith('http') || logoStr.startsWith('data:image')) {
+        return <img src={logoStr} alt="logo" className={`${classes} object-contain rounded`} />;
+      }
+      return <span className={classes}>{logoStr}</span>;
+    };
+
+    // ============================================
+    // COALITION COMPATIBILITY MATRIX
+    // ============================================
+
+    function CompatibilityMatrix({ seatShares, conflictConditions, policyLibrary }) {
+      const allConflicts = buildCoalitionConflicts(seatShares, conflictConditions, policyLibrary);
+      const pairMap = {};
+
+      allConflicts.forEach((conflict) => {
+        const lowId = Math.min(conflict.party1Id, conflict.party2Id);
+        const highId = Math.max(conflict.party1Id, conflict.party2Id);
+        const key = `${lowId}-${highId}`;
+        const party1 = seatShares.find(p => p.id === lowId);
+        const party2 = seatShares.find(p => p.id === highId);
+        if (!party1 || !party2) return;
+
+        if (!pairMap[key]) {
+          pairMap[key] = { party1, party2, conflicts: 0 };
+        }
+        pairMap[key].conflicts += 1;
+      });
+
+      const pairs = Object.values(pairMap);
+
+      pairs.sort((a, b) => b.conflicts - a.conflicts);
+
+      const getConflictLevel = (count) => {
+        if (count >= 3) return { level: 'high', label: 'Critical' };
+        if (count >= 2) return { level: 'medium', label: 'Significant' };
+        return { level: 'low', label: 'Minor' };
+      };
+
+      return (
+        <div className="sg-panel">
+          <h3 className="sg-game-section-title">Coalition Compatibility</h3>
+          {pairs.length === 0 ? (
+            <p className="text-gray-400 text-center py-4">No conflicts between selected parties</p>
+          ) : (
+            <div className="compatibility-grid">
+              {pairs.map((pair, idx) => {
+                const conflictInfo = getConflictLevel(pair.conflicts);
+                return (
+                  <div key={idx} className="compatibility-row">
+                    <div className="party-pair-label">
+                      {pair.party1.name} ↔ {pair.party2.name}
+                    </div>
+                    <div className={`conflict-indicator ${conflictInfo.level}`}>
+                      <span className="text-sm">
+                        {conflictInfo.label}: {pair.conflicts} {pair.conflicts === 1 ? 'issue' : 'issues'}
+                      </span>
+                      <span className="conflict-score ml-auto">⚠️</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ============================================
+    // NEGOTIATION PHASE COMPONENT
+    // ============================================
+
+    function NegotiationPhase({ seatShares, coalition, coalitionMembers, handleDecision, decisions, db, selectedCountry, selectedScenario }) {
+      const [currentConflictIdx, setCurrentConflictIdx] = useState(0);
+      const scenario = hydrateScenarioPolicyLibrary(db?.[selectedCountry]?.[selectedScenario] || {});
+      const conflicts = buildCoalitionConflicts(coalitionMembers, scenario.conflictConditions, scenario.policyLibrary);
+
+      if (conflicts.length === 0) {
+        return (
+          <div className="max-w-3xl mx-auto p-6 py-12 text-center">
+            <h2 className="text-4xl font-bold mb-4">Government Formation Consensus</h2>
+            <div className="bg-green-50 p-8 rounded-2xl border-2 border-green-500 shadow-lg">
+              <p className="text-2xl font-bold text-green-700 mb-2">✓ No conflicts detected!</p>
+              <p className="text-gray-600 mb-6">All coalition parties align on policy positions.</p>
+              <button onClick={() => handleDecision(null, 'skip')} className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-8 rounded-full shadow-lg transition-transform hover:scale-105">
+                Proceed to Final Summary ➔
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      const currentConflict = conflicts[currentConflictIdx];
+      const isLastConflict = currentConflictIdx === conflicts.length - 1;
+      const progressPercent = ((currentConflictIdx + 1) / conflicts.length) * 100;
+
+      // Check for a specific override for this exact conflict
+      const activeOverride = findConflictOverride(currentConflict, scenario.conflictOverrides);
+      const automaticBehavior = getPolicyRuleMatch(currentConflict, scenario.policyLibrary);
+      const activeResolutionPool = (activeOverride?.resolutionOptions?.length ? activeOverride.resolutionOptions : null)
+        || (automaticBehavior?.resolutionOptions?.length ? automaticBehavior.resolutionOptions : null)
+        || scenario.resolutionOptions
+        || DEFAULT_RESOLUTION_OPTIONS;
+      const activeDescription = activeOverride?.description || automaticBehavior?.description || null;
+      const isForcedRestructure = automaticBehavior?.type === 'impasse';
+
+      const decisionOptions = activeResolutionPool.map(option => ({
+        id: option.id,
+        title: applyTemplate(option.titleTemplate, currentConflict),
+        effect: applyTemplate(option.effectTemplate, currentConflict),
+        outcome: option.summaryText || option.label || option.id
+      }));
+
+      return (
+        <div className="max-w-4xl mx-auto p-6 py-12">
+          <h2 className="text-3xl font-bold mb-2">Coalition Negotiation: Policy Disputes</h2>
+          <p className="text-gray-600 mb-6">Resolve disagreements between coalition partners:</p>
+
+          <div className="negotiation-progress">
+            <span>Conflict {currentConflictIdx + 1} of {conflicts.length}</span>
+            <div className="progress-bar flex-1 mx-4">
+              <div className="progress-fill" style={{ width: `${progressPercent}%` }}></div>
+            </div>
+            <span className="text-blue-600">{Math.round(progressPercent)}%</span>
+          </div>
+
+          <div className="negotiation-conflict-card">
+            <div className="conflict-header">
+              <div className="party-badge" style={{ color: currentConflict.party1Color }}>
+                {renderLogo(currentConflict.party1Logo, "text-2xl")}
+              </div>
+              <div className="flex-1">
+                <div className="font-bold text-lg text-gray-800">{currentConflict.party1Name} vs {currentConflict.party2Name}</div>
+                <div className="text-sm text-gray-500">Disagreement over policy: <span className="font-semibold text-amber-600">"{currentConflict.policy}"</span></div>
+                <div className="text-xs text-gray-400 mt-1">Rule: {currentConflict.conditionDescription}</div>
+              </div>
+              <div className="party-badge" style={{ color: currentConflict.party2Color }}>
+                {renderLogo(currentConflict.party2Logo, "text-2xl")}
+              </div>
+            </div>
+
+            <div className="conflict-description">
+              {activeDescription
+                ? <span>{activeDescription}</span>
+                : <span>{currentConflict.party1Name} demands the policy <strong>"{currentConflict.policy}"</strong> be included in the government platform, but this violates {currentConflict.party2Name}'s red lines. How should the coalition resolve this?</span>
+              }
+              {activeOverride && <div className="mt-2 text-xs text-blue-500 font-semibold">📌 Custom conflict scenario</div>}
+              {isForcedRestructure && <div className="mt-2 text-xs text-red-600 font-semibold">This conflict cannot be resolved inside the current coalition. You must restructure the government.</div>}
+            </div>
+
+            {!isForcedRestructure && (
+              <div className="decision-options">
+                {decisionOptions.map(option => (
+                  <div
+                    key={option.id}
+                    className={`decision-option ${decisions[currentConflict.id] === option.id ? 'selected' : ''}`}
+                    onClick={() => handleDecision(currentConflict, option.id)}
+                  >
+                    <div className="decision-radio"></div>
+                    <div className="decision-text">
+                      <div className="decision-title">{option.title}</div>
+                      <div className="decision-effect">{option.effect}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="flex justify-between items-center mt-8">
+            <button
+              onClick={() => setCurrentConflictIdx(prev => Math.max(0, prev - 1))}
+              disabled={currentConflictIdx === 0}
+              className="bg-gray-400 hover:bg-gray-500 disabled:opacity-50 text-white font-bold py-2 px-6 rounded transition-colors"
+            >
+              ← Previous
+            </button>
+
+            {isForcedRestructure ? (
+              <button
+                onClick={() => handleDecision(currentConflict, 'restructure')}
+                className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-8 rounded shadow-lg transition-transform hover:scale-105"
+              >
+                Restructure Government
+              </button>
+            ) : !isLastConflict ? (
+              <button
+                onClick={() => setCurrentConflictIdx(prev => Math.min(conflicts.length - 1, prev + 1))}
+                disabled={!decisions[currentConflict.id]}
+                className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold py-2 px-6 rounded transition-colors"
+              >
+                Next Issue →
+              </button>
+            ) : (
+              <button
+                onClick={() => handleDecision(null, 'complete')}
+                disabled={!decisions[currentConflict.id]}
+                className="bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-bold py-3 px-8 rounded shadow-lg transition-transform hover:scale-105"
+              >
+                Finalize Government ✓
+              </button>
+            )}
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================
+    // DEV DASHBOARD COMPONENT
+    // ============================================
+
+    function DevDashboard({ db, setDb, setScreen }) {
+      const [activeC, setActiveC] = useState(Object.keys(db)[0] || '');
+      const [activeS, setActiveS] = useState(activeC ? Object.keys(db[activeC])[0] || '' : '');
+      const [newCountry, setNewCountry] = useState('');
+      const [newScenario, setNewScenario] = useState('');
+      const [showExport, setShowExport] = useState(false);
+      const [saveStatus, setSaveStatus] = useState('');
+
+      useEffect(() => {
+        if (activeC && db[activeC] && !db[activeC][activeS]) {
+          setActiveS(Object.keys(db[activeC])[0] || '');
+        }
+      }, [activeC, db, activeS]);
+
+      const updateDb = (newDb) => {
+        setDb(newDb);
+        localStorage.setItem('coalitionDb', JSON.stringify(newDb));
+      };
+
+      const updateParty = (partyId, field, val) => {
+        const newDb = { ...db };
+        const idx = newDb[activeC][activeS].parties.findIndex(p => p.id === partyId);
+        if (idx > -1) {
+          newDb[activeC][activeS].parties[idx][field] = val;
+          updateDb(newDb);
+        }
+      };
+
+      const addParty = () => {
+        const newDb = { ...db };
+        const parties = newDb[activeC][activeS].parties;
+        const newId = parties.length ? Math.max(...parties.map(p => p.id)) + 1 : 1;
+        parties.push({ id: newId, name: 'New Party', color: '#555555', logo: '⬜', corePolicies: '', redLines: '', poll: 0, votes: 0 });
+        updateDb(newDb);
+      };
+
+      const removeParty = (partyId) => {
+        const newDb = { ...db };
+        newDb[activeC][activeS].parties = newDb[activeC][activeS].parties.filter(p => p.id !== partyId);
+        updateDb(newDb);
+      };
+
+      const updateRules = (field, val) => {
+        const newDb = { ...db };
+        newDb[activeC][activeS][field] = Number(val);
+        updateDb(newDb);
+      };
+
+      const defaultScenarioConfig = () => ({
+        conflictConditions: JSON.parse(JSON.stringify(DEFAULT_CONFLICT_CONDITIONS)),
+        resolutionOptions: JSON.parse(JSON.stringify(DEFAULT_RESOLUTION_OPTIONS)),
+        conflictOverrides: [],
+        policyLibrary: JSON.parse(JSON.stringify(DEFAULT_POLICY_LIBRARY))
+      });
+
+      const ensurePolicyLibrary = (targetDb) => {
+        const scenario = targetDb?.[activeC]?.[activeS];
+        if (scenario && !Array.isArray(scenario.policyLibrary)) scenario.policyLibrary = JSON.parse(JSON.stringify(DEFAULT_POLICY_LIBRARY));
+        return targetDb;
+      };
+
+      // ---- Conflict Override CRUD ----
+      const ensureOverrides = (targetDb) => {
+        const s = targetDb?.[activeC]?.[activeS];
+        if (s && !Array.isArray(s.conflictOverrides)) s.conflictOverrides = [];
+        return targetDb;
+      };
+
+      const addConflictOverride = () => {
+        const newDb = ensureOverrides({ ...db });
+        newDb[activeC][activeS].conflictOverrides.push({
+          id: `override-${Date.now()}`,
+          policy: '',
+          party1: '',
+          party2: '',
+          description: '',
+          resolutionOptions: JSON.parse(JSON.stringify(DEFAULT_RESOLUTION_OPTIONS))
+        });
+        updateDb(newDb);
+      };
+
+      const removeConflictOverride = (oIdx) => {
+        const newDb = ensureOverrides({ ...db });
+        newDb[activeC][activeS].conflictOverrides.splice(oIdx, 1);
+        updateDb(newDb);
+      };
+
+      const updateConflictOverride = (oIdx, field, value) => {
+        const newDb = ensureOverrides({ ...db });
+        newDb[activeC][activeS].conflictOverrides[oIdx][field] = value;
+        updateDb(newDb);
+      };
+
+      const addOverrideResolutionOption = (oIdx) => {
+        const newDb = ensureOverrides({ ...db });
+        newDb[activeC][activeS].conflictOverrides[oIdx].resolutionOptions.push({
+          id: `option-${Date.now()}`,
+          label: 'New Option',
+          titleTemplate: 'Custom option for "{policy}"',
+          effectTemplate: '{party1} and {party2} agree on a custom outcome for "{policy}".',
+          summaryText: 'Custom outcome agreed'
+        });
+        updateDb(newDb);
+      };
+
+      const removeOverrideResolutionOption = (oIdx, rIdx) => {
+        const newDb = ensureOverrides({ ...db });
+        newDb[activeC][activeS].conflictOverrides[oIdx].resolutionOptions.splice(rIdx, 1);
+        updateDb(newDb);
+      };
+
+      const updateOverrideResolutionOption = (oIdx, rIdx, field, value) => {
+        const newDb = ensureOverrides({ ...db });
+        newDb[activeC][activeS].conflictOverrides[oIdx].resolutionOptions[rIdx][field] = value;
+        updateDb(newDb);
+      };
+
+      const [expandedOverrides, setExpandedOverrides] = useState({});
+      const toggleOverride = (id) => setExpandedOverrides(prev => ({ ...prev, [id]: !prev[id] }));
+
+      const ensureActiveScenarioConfigInDb = (targetDb) => {
+        const scenario = targetDb?.[activeC]?.[activeS];
+        if (!scenario) return targetDb;
+        if (!Array.isArray(scenario.conflictConditions) || !Array.isArray(scenario.resolutionOptions)) {
+          const cfg = defaultScenarioConfig();
+          scenario.conflictConditions = Array.isArray(scenario.conflictConditions) ? scenario.conflictConditions : cfg.conflictConditions;
+          scenario.resolutionOptions = Array.isArray(scenario.resolutionOptions) ? scenario.resolutionOptions : cfg.resolutionOptions;
+        }
+        return targetDb;
+      };
+
+      const updateConflictCondition = (idx, field, value) => {
+        const newDb = { ...db };
+        ensureActiveScenarioConfigInDb(newDb);
+        newDb[activeC][activeS].conflictConditions[idx][field] = value;
+        updateDb(newDb);
+      };
+
+      const addConflictCondition = () => {
+        const newDb = { ...db };
+        ensureActiveScenarioConfigInDb(newDb);
+        const nextId = `condition-${Date.now()}`;
+        newDb[activeC][activeS].conflictConditions.push({
+          id: nextId,
+          leftField: 'corePolicies',
+          rightField: 'redLines',
+          description: 'Custom conflict rule',
+          bidirectional: true
+        });
+        updateDb(newDb);
+      };
+
+      const removeConflictCondition = (idx) => {
+        const newDb = { ...db };
+        ensureActiveScenarioConfigInDb(newDb);
+        newDb[activeC][activeS].conflictConditions.splice(idx, 1);
+        updateDb(newDb);
+      };
+
+      const updateResolutionOption = (idx, field, value) => {
+        const newDb = { ...db };
+        ensureActiveScenarioConfigInDb(newDb);
+        newDb[activeC][activeS].resolutionOptions[idx][field] = value;
+        updateDb(newDb);
+      };
+
+      const addResolutionOption = () => {
+        const newDb = { ...db };
+        ensureActiveScenarioConfigInDb(newDb);
+        const nextId = `option-${Date.now()}`;
+        newDb[activeC][activeS].resolutionOptions.push({
+          id: nextId,
+          label: 'New Option',
+          titleTemplate: 'Custom option for "{policy}"',
+          effectTemplate: '{party1} and {party2} agree on a custom outcome for "{policy}".',
+          summaryText: 'Custom negotiated outcome'
+        });
+        updateDb(newDb);
+      };
+
+      const addPolicyTag = () => {
+        const newDb = ensurePolicyLibrary({ ...db });
+        newDb[activeC][activeS].policyLibrary.push({
+          id: `policy-${Date.now()}`,
+          label: 'New Policy',
+          aliases: '',
+          rules: []
+        });
+        updateDb(newDb);
+      };
+
+      const updatePolicyTag = (policyIdx, field, value) => {
+        const newDb = ensurePolicyLibrary({ ...db });
+        newDb[activeC][activeS].policyLibrary[policyIdx][field] = value;
+        updateDb(newDb);
+      };
+
+      const removePolicyTag = (policyIdx) => {
+        const newDb = ensurePolicyLibrary({ ...db });
+        newDb[activeC][activeS].policyLibrary.splice(policyIdx, 1);
+        updateDb(newDb);
+      };
+
+      const addPolicyRule = (policyIdx) => {
+        const newDb = ensurePolicyLibrary({ ...db });
+        newDb[activeC][activeS].policyLibrary[policyIdx].rules.push({
+          id: `policy-rule-${Date.now()}`,
+          demanderParty: '',
+          blockerParty: '',
+          mode: 'negotiate',
+          descriptionTemplate: "{party2} rejects {party1}'s policy of {policy}, we must nagotiate!",
+          resolutionOptions: []
+        });
+        updateDb(newDb);
+      };
+
+      const updatePolicyRule = (policyIdx, ruleIdx, field, value) => {
+        const newDb = ensurePolicyLibrary({ ...db });
+        newDb[activeC][activeS].policyLibrary[policyIdx].rules[ruleIdx][field] = value;
+        updateDb(newDb);
+      };
+
+      const removePolicyRule = (policyIdx, ruleIdx) => {
+        const newDb = ensurePolicyLibrary({ ...db });
+        newDb[activeC][activeS].policyLibrary[policyIdx].rules.splice(ruleIdx, 1);
+        updateDb(newDb);
+      };
+
+      const addPolicyRuleResolutionOption = (policyIdx, ruleIdx) => {
+        const newDb = ensurePolicyLibrary({ ...db });
+        newDb[activeC][activeS].policyLibrary[policyIdx].rules[ruleIdx].resolutionOptions.push({
+          id: `policy-rule-option-${Date.now()}`,
+          label: 'New Option',
+          titleTemplate: 'Custom option for "{policy}"',
+          effectTemplate: '{party1} and {party2} agree on a custom outcome for "{policy}".',
+          summaryText: 'Custom negotiated outcome'
+        });
+        updateDb(newDb);
+      };
+
+      const updatePolicyRuleResolutionOption = (policyIdx, ruleIdx, optionIdx, field, value) => {
+        const newDb = ensurePolicyLibrary({ ...db });
+        newDb[activeC][activeS].policyLibrary[policyIdx].rules[ruleIdx].resolutionOptions[optionIdx][field] = value;
+        updateDb(newDb);
+      };
+
+      const removePolicyRuleResolutionOption = (policyIdx, ruleIdx, optionIdx) => {
+        const newDb = ensurePolicyLibrary({ ...db });
+        newDb[activeC][activeS].policyLibrary[policyIdx].rules[ruleIdx].resolutionOptions.splice(optionIdx, 1);
+        updateDb(newDb);
+      };
+
+      const [expandedPolicies, setExpandedPolicies] = useState({});
+      const togglePolicyTag = (id) => setExpandedPolicies(prev => ({ ...prev, [id]: !prev[id] }));
+
+      const togglePartyPolicyTag = (partyId, field, label) => {
+        const newDb = { ...db };
+        const party = newDb[activeC][activeS].parties.find(p => p.id === partyId);
+        if (!party) return;
+        const current = splitTagEntries(party[field]);
+        const hasTag = current.some(item => normalizeKey(item) === normalizeKey(label));
+        party[field] = hasTag
+          ? current.filter(item => normalizeKey(item) !== normalizeKey(label)).join(', ')
+          : [...current, label].join(', ');
+        updateDb(newDb);
+      };
+
+      const removeResolutionOption = (idx) => {
+        const newDb = { ...db };
+        ensureActiveScenarioConfigInDb(newDb);
+        newDb[activeC][activeS].resolutionOptions.splice(idx, 1);
+        updateDb(newDb);
+      };
+
+      const handleSaveToGitHub = async () => {
+        const payload = {
+          db: buildExportDb(db),
+          message: `Update coalition database from editor ${new Date().toISOString()}`,
+          path: (window.GITHUB_DB_CONFIG && window.GITHUB_DB_CONFIG.filePath) || 'data/default-db.json'
+        };
+
+        setSaveStatus('Saving...');
+
+        try {
+          const endpoint = window.DB_SAVE_ENDPOINT || '/api/save-db';
+          const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          const data = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(data.error || 'Save failed');
+
+          localStorage.setItem('coalitionDb', JSON.stringify(buildExportDb(db)));
+          setSaveStatus(`Saved to ${payload.path}`);
+        } catch (error) {
+          localStorage.setItem('coalitionDb', JSON.stringify(buildExportDb(db)));
+          setSaveStatus(`Saved locally. Deploy the save endpoint to push to GitHub automatically. ${error.message}`);
+        }
+      };
+
+      const handleAddCountry = () => {
+        if (!newCountry) return;
+        const newDb = {
+          ...db,
+          [newCountry]: {
+            "2026 Snapshot": {
+              seats: 100,
+              threshold: 5,
+              parties: [],
+              ...defaultScenarioConfig()
+            }
+          }
+        };
+        updateDb(newDb);
+        setActiveC(newCountry);
+        setActiveS("2026 Snapshot");
+        setNewCountry('');
+      };
+
+      const handleAddScenario = () => {
+        if (!newScenario || !activeC) return;
+        const newDb = { ...db };
+        newDb[activeC][newScenario] = { seats: 100, threshold: 5, parties: [], ...defaultScenarioConfig() };
+        updateDb(newDb);
+        setActiveS(newScenario);
+        setNewScenario('');
+      };
+
+      const activeScenarioConfig = activeC && activeS && db[activeC] && db[activeC][activeS]
+        ? hydrateScenarioPolicyLibrary(db[activeC][activeS])
+        : { conflictConditions: [], resolutionOptions: [], conflictOverrides: [], policyLibrary: [] };
+
+      return (
+        <div className="min-h-screen bg-slate-900 text-slate-200 flex flex-col font-sans">
+          <div className="bg-slate-950 p-4 flex justify-between items-center border-b border-slate-800">
+            <h2 className="text-2xl font-bold text-white flex items-center"><span className="mr-3">⚙️</span> Visual Database Editor</h2>
+            <div className="flex gap-4">
+              <button onClick={handleSaveToGitHub} className="bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-2 rounded font-bold">💾 Save to GitHub</button>
+              <button onClick={() => setShowExport(true)} className="bg-slate-700 hover:bg-slate-600 text-white px-5 py-2 rounded font-bold">📤 Export JSON</button>
+              <button onClick={() => setScreen('HOME')} className="bg-blue-600 hover:bg-blue-500 text-white px-5 py-2 rounded font-bold">Exit to Game</button>
+            </div>
+          </div>
+
+          {saveStatus && (
+            <div className="px-4 py-2 border-b border-slate-800 bg-slate-950/80 text-sm text-slate-300">
+              {saveStatus}
+            </div>
+          )}
+
+          {showExport && (
+            <div className="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-6">
+              <div className="bg-slate-800 p-6 rounded-xl max-w-3xl w-full border border-slate-600 shadow-2xl">
+                <h3 className="text-2xl font-bold text-white mb-2">How to push updates to the live website:</h3>
+                <p className="text-slate-400 mb-4 text-sm leading-relaxed">
+                  Click inside the box below, press <strong>Ctrl+A</strong> to select all, and copy it. Then, paste it over the <code>INITIAL_DB</code> section at the top of your <code>index.html</code> file and redeploy.
+                </p>
+                <textarea readOnly value={`window.INITIAL_DB = ${JSON.stringify(buildExportDb(db), null, 2)};`} className="w-full h-80 bg-slate-950 text-emerald-400 p-4 font-mono text-xs rounded border border-slate-700 outline-none mb-4 selection:bg-emerald-900"></textarea>
+                <div className="flex justify-end">
+                  <button onClick={() => setShowExport(false)} className="bg-slate-600 hover:bg-slate-500 px-6 py-2 rounded font-bold text-white">Close Window</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-1 overflow-hidden">
+            <div className="w-72 bg-slate-800 border-r border-slate-700 flex flex-col">
+              <div className="p-4 overflow-y-auto flex-1">
+                <h3 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-4">Countries & Scenarios</h3>
+                {Object.keys(db).map(country => (
+                  <div key={country} className="mb-6">
+                    <button onClick={() => { setActiveC(country); setActiveS(Object.keys(db[country])[0] || ''); }} className={`font-bold text-lg flex items-center w-full text-left mb-2 ${activeC === country ? 'text-blue-400' : 'text-slate-300 hover:text-white'}`}>
+                      {activeC === country ? '📂' : '📁'} <span className="ml-2">{country}</span>
+                    </button>
+                    {activeC === country && (
+                      <div className="pl-6 space-y-1 border-l-2 border-slate-700 ml-2">
+                        {Object.keys(db[country]).map(scenario => (
+                          <button key={scenario} onClick={() => setActiveS(scenario)} className={`block w-full text-left px-2 py-1 text-sm rounded ${activeS === scenario ? 'bg-blue-600 text-white font-semibold' : 'text-slate-400 hover:bg-slate-700'}`}>
+                            {scenario}
+                          </button>
+                        ))}
+                        <div className="px-2 py-2 flex">
+                          <input type="text" value={newScenario} onChange={(e) => setNewScenario(e.target.value)} placeholder="New Scenario..." className="w-full bg-slate-900 text-xs px-2 py-1 rounded-l border border-slate-700 outline-none"/>
+                          <button onClick={handleAddScenario} className="bg-slate-700 px-2 rounded-r text-xs font-bold hover:bg-slate-600">+</button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+
+                <div className="mt-8 border-t border-slate-700 pt-4">
+                  <label className="text-xs font-bold text-slate-500 uppercase">Add New Country</label>
+                  <div className="flex mt-2">
+                    <input type="text" value={newCountry} onChange={(e) => setNewCountry(e.target.value)} placeholder="e.g. UK" className="w-full bg-slate-900 text-sm px-2 py-2 rounded-l border border-slate-700 outline-none"/>
+                    <button onClick={handleAddCountry} className="bg-slate-700 px-3 rounded-r text-sm font-bold hover:bg-blue-600">+</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex-1 p-8 overflow-y-auto bg-slate-900">
+              {activeC && activeS && db[activeC][activeS] ? (
+                <div className="max-w-5xl mx-auto">
+                  <div className="flex justify-between items-end mb-8 border-b border-slate-700 pb-4">
+                    <div>
+                      <h4 className="text-blue-400 font-bold mb-1">{activeC}</h4>
+                      <h2 className="text-3xl font-bold text-white">{activeS}</h2>
+                    </div>
+                    <div className="flex gap-4">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Total Seats</label>
+                        <input type="number" value={db[activeC][activeS].seats} onChange={(e) => updateRules('seats', e.target.value)} className="bg-slate-800 text-white p-2 rounded border border-slate-600 w-24 text-center font-mono"/>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-400 uppercase mb-1">Threshold %</label>
+                        <input type="number" step="0.1" value={db[activeC][activeS].threshold} onChange={(e) => updateRules('threshold', e.target.value)} className="bg-slate-800 text-white p-2 rounded border border-slate-600 w-24 text-center font-mono"/>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    {db[activeC][activeS].parties.map((party) => (
+                      <div key={party.id} className="bg-slate-800 p-4 rounded-lg border-l-4 shadow-lg flex flex-col gap-3 relative" style={{ borderColor: party.color }}>
+                        <button onClick={() => removeParty(party.id)} className="absolute top-2 right-2 text-slate-500 hover:text-red-500 bg-slate-900 rounded-full w-6 h-6 flex items-center justify-center text-xs">✕</button>
+
+                        <div className="grid grid-cols-12 gap-4 items-center">
+                          <div className="col-span-1 flex flex-col items-center">
+                            <label className="text-[10px] font-bold text-slate-500 uppercase mb-1">Logo URL/Emoji</label>
+                            <div className="flex items-center justify-center w-12 h-12 bg-slate-900 rounded overflow-hidden p-1 border border-slate-700 shadow-inner mb-1">
+                              {renderLogo(party.logo, "max-w-full max-h-full text-2xl")}
+                            </div>
+                            <input type="text" value={party.logo} onChange={(e) => updateParty(party.id, 'logo', e.target.value)} className="w-full text-[10px] bg-slate-900 border border-slate-700 p-1 text-center text-slate-300 rounded"/>
+                          </div>
+
+                          <div className="col-span-3">
+                            <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Party Name</label>
+                            <input type="text" value={party.name} onChange={(e) => updateParty(party.id, 'name', e.target.value)} className="w-full bg-slate-900 text-white font-bold p-2 rounded border border-slate-700 focus:border-blue-500 outline-none"/>
+                          </div>
+
+                          <div className="col-span-1">
+                            <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Color</label>
+                            <input type="color" value={party.color} onChange={(e) => updateParty(party.id, 'color', e.target.value)} className="w-full h-10 border-0 rounded cursor-pointer bg-slate-900 p-0.5"/>
+                          </div>
+
+                          <div className="col-span-2">
+                            <label className="text-[10px] font-bold text-slate-500 uppercase mb-1 block">Poll/Votes Base %</label>
+                            <input type="number" step="0.1" value={party.poll} onChange={(e) => { updateParty(party.id, 'poll', Number(e.target.value)); updateParty(party.id, 'votes', Number(e.target.value)); }} className="w-full bg-slate-900 text-emerald-400 font-mono p-2 rounded border border-slate-700 text-center outline-none"/>
+                          </div>
+
+                          <div className="col-span-5 flex flex-col gap-2">
+                            <div className="text-[10px] font-bold text-cyan-400 uppercase">Policies Are Tag-Based</div>
+                            <div className="bg-slate-900/70 border border-slate-700 rounded p-2 text-[11px] text-slate-400">
+                              Use the Core Policies/Red Lines controls below to edit policy positions.
+                            </div>
+                            <div className="text-[10px] text-slate-500">Core Policies: {splitTagEntries(party.corePolicies).length}</div>
+                            <div className="text-[10px] text-slate-500">Red Lines: {splitTagEntries(party.redLines).length}</div>
+                          </div>
+
+                          <div className="col-span-12 mt-2 pt-3 border-t border-slate-700/60">
+                            <div className="mb-2">
+                              <label className="text-[10px] font-bold text-cyan-400 uppercase block mb-1">Core Policies</label>
+                              <div className="flex flex-wrap gap-2">
+                                {activeScenarioConfig.policyLibrary.map((policyTag, policyIdx) => {
+                                  const selected = parseTags(party.corePolicies).includes(normalizeKey(policyTag.label));
+                                  return (
+                                    <button
+                                      key={`${party.id}-core-${policyTag.id || policyIdx}`}
+                                      type="button"
+                                      onClick={() => togglePartyPolicyTag(party.id, 'corePolicies', policyTag.label)}
+                                      className={`px-2 py-1 rounded-full text-[11px] border transition-colors ${selected ? 'bg-cyan-600 text-white border-cyan-400' : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-cyan-500'}`}
+                                    >
+                                      {policyTag.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                            <div>
+                              <label className="text-[10px] font-bold text-rose-400 uppercase block mb-1">Red Lines</label>
+                              <div className="flex flex-wrap gap-2">
+                                {activeScenarioConfig.policyLibrary.map((policyTag, policyIdx) => {
+                                  const selected = parseTags(party.redLines).includes(normalizeKey(policyTag.label));
+                                  return (
+                                    <button
+                                      key={`${party.id}-red-${policyTag.id || policyIdx}`}
+                                      type="button"
+                                      onClick={() => togglePartyPolicyTag(party.id, 'redLines', policyTag.label)}
+                                      className={`px-2 py-1 rounded-full text-[11px] border transition-colors ${selected ? 'bg-rose-700 text-white border-rose-400' : 'bg-slate-900 text-slate-300 border-slate-700 hover:border-rose-500'}`}
+                                    >
+                                      {policyTag.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+
+                    <button onClick={addParty} className="w-full py-4 border-2 border-dashed border-slate-700 text-slate-400 font-bold rounded-lg hover:border-blue-500 hover:text-blue-500 transition-colors">
+                      + Add Party to {activeS}
+                    </button>
+
+                    <div className="mt-8 bg-cyan-950 p-4 rounded-lg border border-cyan-800">
+                      <div className="flex justify-between items-center mb-3">
+                        <div>
+                          <h3 className="text-lg font-bold text-white">Policy Library</h3>
+                          <p className="text-xs text-cyan-300 mt-1">Create reusable policy tags and define how each party-pair conflict behaves.</p>
+                        </div>
+                        <button onClick={addPolicyTag} className="bg-cyan-600 hover:bg-cyan-500 text-white px-3 py-1 rounded text-sm font-bold whitespace-nowrap">+ Add Policy Tag</button>
+                      </div>
+                      <div className="space-y-3">
+                        {activeScenarioConfig.policyLibrary.map((policyTag, policyIdx) => (
+                          <div key={policyTag.id || policyIdx} className="bg-slate-900 rounded border border-cyan-900">
+                            <div className="flex items-center justify-between px-3 py-2 cursor-pointer" onClick={() => togglePolicyTag(policyTag.id || policyIdx)}>
+                              <div className="flex items-center gap-3">
+                                <span className="text-cyan-400 font-bold text-sm">{expandedPolicies[policyTag.id || policyIdx] ? '▼' : '▶'}</span>
+                                <span className="text-white font-semibold text-sm">{policyTag.label || '(new policy tag)'}</span>
+                                <span className="text-cyan-300 text-xs">{(policyTag.rules || []).length} rules</span>
+                              </div>
+                              <button onClick={(e) => { e.stopPropagation(); removePolicyTag(policyIdx); }} className="text-red-400 hover:text-red-300 text-xs font-bold px-2 py-1 rounded hover:bg-red-900/40">Remove</button>
+                            </div>
+                            {expandedPolicies[policyTag.id || policyIdx] && (
+                              <div className="px-3 pb-3 border-t border-cyan-950 pt-3 space-y-3">
+                                <div className="grid grid-cols-12 gap-2">
+                                  <div className="col-span-3">
+                                    <label className="text-[10px] uppercase text-cyan-400 font-bold block mb-1">Tag ID</label>
+                                    <input type="text" value={policyTag.id || ''} onChange={(e) => updatePolicyTag(policyIdx, 'id', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-cyan-800 text-white"/>
+                                  </div>
+                                  <div className="col-span-4">
+                                    <label className="text-[10px] uppercase text-cyan-400 font-bold block mb-1">Label</label>
+                                    <input type="text" value={policyTag.label || ''} onChange={(e) => updatePolicyTag(policyIdx, 'label', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-cyan-800 text-white"/>
+                                  </div>
+                                  <div className="col-span-5">
+                                    <label className="text-[10px] uppercase text-cyan-400 font-bold block mb-1">Aliases</label>
+                                    <input type="text" value={policyTag.aliases || ''} placeholder="Comma separated aliases" onChange={(e) => updatePolicyTag(policyIdx, 'aliases', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-cyan-800 text-white placeholder:text-slate-500"/>
+                                  </div>
+                                </div>
+
+                                <div>
+                                  <div className="flex justify-between items-center mb-2">
+                                    <label className="text-[10px] uppercase text-cyan-400 font-bold">Party-Pair Rules</label>
+                                    <button onClick={() => addPolicyRule(policyIdx)} className="bg-cyan-700 hover:bg-cyan-600 text-white px-2 py-1 rounded text-xs font-bold">+ Add Rule</button>
+                                  </div>
+                                  <div className="space-y-2">
+                                    {(policyTag.rules || []).map((rule, ruleIdx) => (
+                                      <div key={rule.id || ruleIdx} className="bg-cyan-950/40 rounded p-3 border border-cyan-900">
+                                        <div className="grid grid-cols-12 gap-2 items-start">
+                                          <div className="col-span-3">
+                                            <label className="text-[9px] uppercase text-cyan-400 font-bold block mb-1">Demanding Party</label>
+                                            <input type="text" value={rule.demanderParty || ''} placeholder="Blank = any" onChange={(e) => updatePolicyRule(policyIdx, ruleIdx, 'demanderParty', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-cyan-800 text-white placeholder:text-slate-500"/>
+                                          </div>
+                                          <div className="col-span-3">
+                                            <label className="text-[9px] uppercase text-cyan-400 font-bold block mb-1">Blocking Party</label>
+                                            <input type="text" value={rule.blockerParty || ''} placeholder="Blank = any" onChange={(e) => updatePolicyRule(policyIdx, ruleIdx, 'blockerParty', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-cyan-800 text-white placeholder:text-slate-500"/>
+                                          </div>
+                                          <div className="col-span-2">
+                                            <label className="text-[9px] uppercase text-cyan-400 font-bold block mb-1">Mode</label>
+                                            <select value={rule.mode || 'negotiate'} onChange={(e) => updatePolicyRule(policyIdx, ruleIdx, 'mode', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-cyan-800 text-white">
+                                              <option value="negotiate">negotiate</option>
+                                              <option value="impasse">impasse</option>
+                                            </select>
+                                          </div>
+                                          <div className="col-span-4 flex justify-end">
+                                            <button onClick={() => removePolicyRule(policyIdx, ruleIdx)} className="bg-red-700 hover:bg-red-600 text-white px-2 py-1 rounded text-xs font-bold">Remove Rule</button>
+                                          </div>
+                                          <div className="col-span-12">
+                                            <label className="text-[9px] uppercase text-cyan-400 font-bold block mb-1">Description Template</label>
+                                            <input type="text" value={rule.descriptionTemplate || ''} onChange={(e) => updatePolicyRule(policyIdx, ruleIdx, 'descriptionTemplate', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-cyan-800 text-white"/>
+                                          </div>
+                                        </div>
+
+                                        {rule.mode !== 'impasse' && (
+                                          <div className="mt-3">
+                                            <div className="flex justify-between items-center mb-2">
+                                              <label className="text-[9px] uppercase text-cyan-400 font-bold">Custom Resolution Options</label>
+                                              <button onClick={() => addPolicyRuleResolutionOption(policyIdx, ruleIdx)} className="bg-cyan-800 hover:bg-cyan-700 text-white px-2 py-1 rounded text-[10px] font-bold">+ Option</button>
+                                            </div>
+                                            <div className="space-y-2">
+                                              {(rule.resolutionOptions || []).map((option, optionIdx) => (
+                                                <div key={option.id || optionIdx} className="bg-slate-900 rounded p-2 border border-cyan-950">
+                                                  <div className="grid grid-cols-12 gap-2 items-start">
+                                                    <div className="col-span-3">
+                                                      <label className="text-[9px] uppercase text-cyan-400 font-bold block mb-1">Label</label>
+                                                      <input type="text" value={option.label || ''} onChange={(e) => updatePolicyRuleResolutionOption(policyIdx, ruleIdx, optionIdx, 'label', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-cyan-900 text-white"/>
+                                                    </div>
+                                                    <div className="col-span-5">
+                                                      <label className="text-[9px] uppercase text-cyan-400 font-bold block mb-1">Title Template</label>
+                                                      <input type="text" value={option.titleTemplate || ''} onChange={(e) => updatePolicyRuleResolutionOption(policyIdx, ruleIdx, optionIdx, 'titleTemplate', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-cyan-900 text-white"/>
+                                                    </div>
+                                                    <div className="col-span-3">
+                                                      <label className="text-[9px] uppercase text-cyan-400 font-bold block mb-1">Summary Text</label>
+                                                      <input type="text" value={option.summaryText || ''} onChange={(e) => updatePolicyRuleResolutionOption(policyIdx, ruleIdx, optionIdx, 'summaryText', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-cyan-900 text-white"/>
+                                                    </div>
+                                                    <div className="col-span-1 flex items-end justify-end">
+                                                      <button onClick={() => removePolicyRuleResolutionOption(policyIdx, ruleIdx, optionIdx)} className="text-red-400 hover:text-red-300 text-lg leading-none">✕</button>
+                                                    </div>
+                                                    <div className="col-span-12">
+                                                      <label className="text-[9px] uppercase text-cyan-400 font-bold block mb-1">Effect Template</label>
+                                                      <input type="text" value={option.effectTemplate || ''} onChange={(e) => updatePolicyRuleResolutionOption(policyIdx, ruleIdx, optionIdx, 'effectTemplate', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-cyan-900 text-white"/>
+                                                    </div>
+                                                  </div>
+                                                </div>
+                                              ))}
+                                              {(rule.resolutionOptions || []).length === 0 && (
+                                                <p className="text-xs text-cyan-500 italic">No custom options set. Scenario default resolution options will be used.</p>
+                                              )}
+                                            </div>
+                                          </div>
+                                        )}
+                                      </div>
+                                    ))}
+                                    {(policyTag.rules || []).length === 0 && (
+                                      <p className="text-xs text-cyan-500 italic">No rules yet. Add at least one party-pair rule for this policy tag.</p>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="mt-8 bg-slate-800 p-4 rounded-lg border border-slate-700">
+                      <div className="flex justify-between items-center mb-3">
+                        <h3 className="text-lg font-bold text-white">Conflict Conditions</h3>
+                        <button onClick={addConflictCondition} className="bg-amber-600 hover:bg-amber-500 text-white px-3 py-1 rounded text-sm font-bold">+ Add Condition</button>
+                      </div>
+                      <p className="text-xs text-slate-400 mb-3">Defines when two coalition parties are considered in conflict.</p>
+                      <div className="space-y-3">
+                        {activeScenarioConfig.conflictConditions.map((condition, idx) => (
+                          <div key={condition.id || idx} className="bg-slate-900 rounded p-3 border border-slate-700">
+                            <div className="grid grid-cols-12 gap-2 items-center">
+                              <div className="col-span-2">
+                                <label className="text-[10px] uppercase text-slate-500 font-bold block mb-1">Rule ID</label>
+                                <input type="text" value={condition.id || ''} onChange={(e) => updateConflictCondition(idx, 'id', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-slate-700"/>
+                              </div>
+                              <div className="col-span-3">
+                                <label className="text-[10px] uppercase text-slate-500 font-bold block mb-1">Demand Field</label>
+                                <select value={condition.leftField || 'corePolicies'} onChange={(e) => updateConflictCondition(idx, 'leftField', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-slate-700">
+                                  <option value="corePolicies">corePolicies</option>
+                                  <option value="redLines">redLines</option>
+                                </select>
+                              </div>
+                              <div className="col-span-3">
+                                <label className="text-[10px] uppercase text-slate-500 font-bold block mb-1">Blocker Field</label>
+                                <select value={condition.rightField || 'redLines'} onChange={(e) => updateConflictCondition(idx, 'rightField', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-slate-700">
+                                  <option value="redLines">redLines</option>
+                                  <option value="corePolicies">corePolicies</option>
+                                </select>
+                              </div>
+                              <div className="col-span-2">
+                                <label className="text-[10px] uppercase text-slate-500 font-bold block mb-1">Bidirectional</label>
+                                <select value={condition.bidirectional ? 'true' : 'false'} onChange={(e) => updateConflictCondition(idx, 'bidirectional', e.target.value === 'true')} className="w-full bg-slate-800 text-xs p-2 rounded border border-slate-700">
+                                  <option value="true">Yes</option>
+                                  <option value="false">No</option>
+                                </select>
+                              </div>
+                              <div className="col-span-2 flex justify-end">
+                                <button onClick={() => removeConflictCondition(idx)} className="bg-red-700 hover:bg-red-600 text-white px-3 py-2 rounded text-xs font-bold">Remove</button>
+                              </div>
+                              <div className="col-span-12">
+                                <label className="text-[10px] uppercase text-slate-500 font-bold block mb-1">Description</label>
+                                <input type="text" value={condition.description || ''} onChange={(e) => updateConflictCondition(idx, 'description', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-slate-700"/>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="mt-4 bg-slate-800 p-4 rounded-lg border border-slate-700">
+                      <div className="flex justify-between items-center mb-3">
+                        <h3 className="text-lg font-bold text-white">Default Resolution Options</h3>
+                        <button onClick={addResolutionOption} className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 py-1 rounded text-sm font-bold">+ Add Resolution</button>
+                      </div>
+                      <p className="text-xs text-slate-400 mb-3">Use placeholders: {'{policy}'}, {'{party1}'}, {'{party2}'}</p>
+                      <div className="space-y-3">
+                        {activeScenarioConfig.resolutionOptions.map((option, idx) => (
+                          <div key={option.id || idx} className="bg-slate-900 rounded p-3 border border-slate-700">
+                            <div className="grid grid-cols-12 gap-2 items-start">
+                              <div className="col-span-2">
+                                <label className="text-[10px] uppercase text-slate-500 font-bold block mb-1">Option ID</label>
+                                <input type="text" value={option.id || ''} onChange={(e) => updateResolutionOption(idx, 'id', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-slate-700"/>
+                              </div>
+                              <div className="col-span-3">
+                                <label className="text-[10px] uppercase text-slate-500 font-bold block mb-1">Label</label>
+                                <input type="text" value={option.label || ''} onChange={(e) => updateResolutionOption(idx, 'label', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-slate-700"/>
+                              </div>
+                              <div className="col-span-5">
+                                <label className="text-[10px] uppercase text-slate-500 font-bold block mb-1">Title Template</label>
+                                <input type="text" value={option.titleTemplate || ''} onChange={(e) => updateResolutionOption(idx, 'titleTemplate', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-slate-700"/>
+                              </div>
+                              <div className="col-span-2 flex justify-end">
+                                <button onClick={() => removeResolutionOption(idx)} className="bg-red-700 hover:bg-red-600 text-white px-3 py-2 rounded text-xs font-bold">Remove</button>
+                              </div>
+                              <div className="col-span-8">
+                                <label className="text-[10px] uppercase text-slate-500 font-bold block mb-1">Effect Template</label>
+                                <input type="text" value={option.effectTemplate || ''} onChange={(e) => updateResolutionOption(idx, 'effectTemplate', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-slate-700"/>
+                              </div>
+                              <div className="col-span-4">
+                                <label className="text-[10px] uppercase text-slate-500 font-bold block mb-1">Summary Text</label>
+                                <input type="text" value={option.summaryText || ''} onChange={(e) => updateResolutionOption(idx, 'summaryText', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-slate-700"/>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="mt-4 bg-indigo-950 p-4 rounded-lg border border-indigo-700">
+                      <div className="flex justify-between items-center mb-3">
+                        <div>
+                          <h3 className="text-lg font-bold text-white">Specific Conflict Overrides</h3>
+                          <p className="text-xs text-indigo-300 mt-1">Override description and resolution options for a specific policy conflict.</p>
+                        </div>
+                        <button onClick={addConflictOverride} className="bg-indigo-600 hover:bg-indigo-500 text-white px-3 py-1 rounded text-sm font-bold whitespace-nowrap">+ Add Override</button>
+                      </div>
+                      <div className="space-y-3">
+                        {activeScenarioConfig.conflictOverrides.map((ov, oIdx) => (
+                          <div key={ov.id || oIdx} className="bg-slate-900 rounded border border-indigo-800">
+                            <div className="flex items-center justify-between px-3 py-2 cursor-pointer" onClick={() => toggleOverride(ov.id || oIdx)}>
+                              <div className="flex items-center gap-3">
+                                <span className="text-indigo-400 font-bold text-sm">{expandedOverrides[ov.id || oIdx] ? '▼' : '▶'}</span>
+                                <span className="text-white font-semibold text-sm">
+                                  {ov.policy ? `"${ov.policy}"` : '(new override)'}
+                                  {ov.party1 || ov.party2 ? <span className="text-indigo-300 font-normal ml-2 text-xs">
+                                    [{ov.party1 || '...'} → {ov.party2 || '...'}]
+                                  </span> : null}
+                                </span>
+                              </div>
+                              <button onClick={(e) => { e.stopPropagation(); removeConflictOverride(oIdx); }} className="text-red-400 hover:text-red-300 text-xs font-bold px-2 py-1 rounded hover:bg-red-900/40">Remove</button>
+                            </div>
+                            {expandedOverrides[ov.id || oIdx] && (
+                              <div className="px-3 pb-3 border-t border-indigo-900 pt-3 space-y-3">
+                                <div className="grid grid-cols-12 gap-2">
+                                  <div className="col-span-4">
+                                    <label className="text-[10px] uppercase text-indigo-400 font-bold block mb-1">Policy Keyword (required)</label>
+                                    <input type="text" value={ov.policy || ''} placeholder="e.g. secularism" onChange={(e) => updateConflictOverride(oIdx, 'policy', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-indigo-700 text-white placeholder:text-slate-600"/>
+                                  </div>
+                                  <div className="col-span-4">
+                                    <label className="text-[10px] uppercase text-indigo-400 font-bold block mb-1">Demanding Party (optional)</label>
+                                    <input type="text" value={ov.party1 || ''} placeholder="e.g. Yesh Atid" onChange={(e) => updateConflictOverride(oIdx, 'party1', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-indigo-700 text-white placeholder:text-slate-600"/>
+                                  </div>
+                                  <div className="col-span-4">
+                                    <label className="text-[10px] uppercase text-indigo-400 font-bold block mb-1">Blocking Party (optional)</label>
+                                    <input type="text" value={ov.party2 || ''} placeholder="e.g. Shas" onChange={(e) => updateConflictOverride(oIdx, 'party2', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-indigo-700 text-white placeholder:text-slate-600"/>
+                                  </div>
+                                  <div className="col-span-12">
+                                    <label className="text-[10px] uppercase text-indigo-400 font-bold block mb-1">Custom Conflict Description</label>
+                                    <textarea value={ov.description || ''} rows={3} placeholder="Describe this specific conflict in your own words..." onChange={(e) => updateConflictOverride(oIdx, 'description', e.target.value)} className="w-full bg-slate-800 text-xs p-2 rounded border border-indigo-700 text-white placeholder:text-slate-600 resize-none"/>
+                                  </div>
+                                </div>
+                                <div className="mt-2">
+                                  <div className="flex justify-between items-center mb-2">
+                                    <label className="text-[10px] uppercase text-indigo-400 font-bold">Resolution Options for this conflict</label>
+                                    <button onClick={() => addOverrideResolutionOption(oIdx)} className="bg-indigo-700 hover:bg-indigo-600 text-white px-2 py-1 rounded text-xs font-bold">+ Option</button>
+                                  </div>
+                                  <div className="space-y-2">
+                                    {(ov.resolutionOptions || []).map((opt, rIdx) => (
+                                      <div key={opt.id || rIdx} className="bg-indigo-950/60 rounded p-2 border border-indigo-800">
+                                        <div className="grid grid-cols-12 gap-2 items-start">
+                                          <div className="col-span-3">
+                                            <label className="text-[9px] uppercase text-indigo-400 font-bold block mb-1">Label</label>
+                                            <input type="text" value={opt.label || ''} onChange={(e) => updateOverrideResolutionOption(oIdx, rIdx, 'label', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-indigo-700 text-white"/>
+                                          </div>
+                                          <div className="col-span-5">
+                                            <label className="text-[9px] uppercase text-indigo-400 font-bold block mb-1">Title Template</label>
+                                            <input type="text" value={opt.titleTemplate || ''} onChange={(e) => updateOverrideResolutionOption(oIdx, rIdx, 'titleTemplate', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-indigo-700 text-white"/>
+                                          </div>
+                                          <div className="col-span-4">
+                                            <label className="text-[9px] uppercase text-indigo-400 font-bold block mb-1">Summary Text</label>
+                                            <input type="text" value={opt.summaryText || ''} onChange={(e) => updateOverrideResolutionOption(oIdx, rIdx, 'summaryText', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-indigo-700 text-white"/>
+                                          </div>
+                                          <div className="col-span-11">
+                                            <label className="text-[9px] uppercase text-indigo-400 font-bold block mb-1">Effect Template ({'{policy}'}, {'{party1}'}, {'{party2}'})</label>
+                                            <input type="text" value={opt.effectTemplate || ''} onChange={(e) => updateOverrideResolutionOption(oIdx, rIdx, 'effectTemplate', e.target.value)} className="w-full bg-slate-800 text-xs p-1 rounded border border-indigo-700 text-white"/>
+                                          </div>
+                                          <div className="col-span-1 flex items-end justify-end">
+                                            <button onClick={() => removeOverrideResolutionOption(oIdx, rIdx)} className="text-red-400 hover:text-red-300 text-lg leading-none">✕</button>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    ))}
+                                    {(ov.resolutionOptions || []).length === 0 && (
+                                      <p className="text-xs text-indigo-500 italic">No options yet — defaults will be used. Add options above to override.</p>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                        {activeScenarioConfig.conflictOverrides.length === 0 && (
+                          <p className="text-xs text-indigo-500 italic">No overrides yet. Click '+ Add Override' to create one.</p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex h-full items-center justify-center text-slate-600 font-bold text-xl">Select a Scenario on the left to edit</div>
+              )}
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // ============================================
+    // MAIN APP COMPONENT
+    // ============================================
+
+    function App() {
+      const [screen, setScreen] = useState('HOME');
+      const [db, setDb] = useState({});
+      useEffect(() => {
+        const loadDb = async () => {
+          await window.loadInitialDb();
+          const saved = localStorage.getItem('coalitionDb');
+          if (saved) {
+            try {
+              setDb(JSON.parse(saved));
+              return;
+            } catch (error) {
+              console.warn('Could not parse local DB snapshot', error);
+            }
+          }
+          setDb(window.INITIAL_DB || {});
+        };
+        loadDb();
+      }, []);
+
+      // Game State
+      const [selectedCountry, setSelectedCountry] = useState('Israel');
+      const [selectedScenario, setSelectedScenario] = useState('');
+      const [threshold, setThreshold] = useState(3.25);
+      const [totalSeats, setTotalSeats] = useState(120);
+      const [coalition, setCoalition] = useState([]);
+      const [displayMode, setDisplayMode] = useState('seats');
+      const [parties, setParties] = useState([]);
+      const [devPassword, setDevPassword] = useState('');
+      const [decisions, setDecisions] = useState({});
+      const [showNoCoalitionModal, setShowNoCoalitionModal] = useState(false);
+
+      const resetGame = () => { setCoalition([]); setScreen('HOME'); setDecisions({}); };
+
+      // Math Engine
+      const validParties = parties.filter(p => p.votes >= threshold);
+      const totalValidVotes = validParties.reduce((sum, p) => sum + p.votes, 0);
+      const majorityTarget = Math.floor(totalSeats / 2) + 1;
+
+      const seatShares = useMemo(() => {
+        if (totalValidVotes === 0) return [];
+        let mapped = validParties.map(p => {
+          const exactSeats = (p.votes / totalValidVotes) * totalSeats;
+          return { ...p, seatPercentage: (p.votes / totalValidVotes) * 100, floor: Math.floor(exactSeats), remainder: exactSeats - Math.floor(exactSeats) };
+        });
+        let allocatedSeats = mapped.reduce((sum, p) => sum + p.floor, 0);
+        let remainingSeats = totalSeats - allocatedSeats;
+        mapped.sort((a, b) => b.remainder - a.remainder);
+        for (let i = 0; i < remainingSeats; i++) mapped[i].floor += 1;
+        return mapped.sort((a, b) => a.id - b.id).map(p => ({ ...p, seats: p.floor }));
+      }, [parties, threshold, totalSeats, totalValidVotes]);
+
+      const totalRawVotes = parties.reduce((sum, p) => sum + (Number(p.votes) || 0), 0);
+      const coalitionSeats = coalition.reduce((sum, id) => {
+        const party = seatShares.find(p => p.id === id);
+        return sum + (party ? party.seats : 0);
+      }, 0);
+      const coalitionPercentage = totalSeats > 0 ? (coalitionSeats / totalSeats) * 100 : 0;
+      const isMajority = coalitionSeats >= majorityTarget;
+
+      // Conflicts
+      const activeScenarioData = hydrateScenarioPolicyLibrary(db?.[selectedCountry]?.[selectedScenario] || {});
+      const coalitionMembers = seatShares.filter(p => coalition.includes(p.id));
+      const coalitionConflictDetails = buildCoalitionConflicts(coalitionMembers, activeScenarioData.conflictConditions, activeScenarioData.policyLibrary);
+      const conflicts = coalitionConflictDetails.map(c => `Conflict: ${c.party1Name} demands "${c.policy}", violating ${c.party2Name}'s constraints. (${c.conditionDescription})`);
+
+      const handleNegotiationDecision = (conflict, decision) => {
+        if (decision === 'complete') {
+          setScreen('SUMMARY');
+        } else if (decision === 'skip') {
+          setScreen('SUMMARY');
+        } else if (decision === 'restructure') {
+          setScreen('GAME');
+        } else if (conflict) {
+          setDecisions({ ...decisions, [conflict.id]: decision });
+        }
+      };
+
+      const handleConfirmGovernment = () => {
+        if (isMajority) {
+          setScreen('NEGOTIATION');
+          return;
+        }
+        setShowNoCoalitionModal(true);
+      };
+
+      const confirmNoCoalition = () => {
+        setShowNoCoalitionModal(false);
+        setScreen('SUMMARY');
+      };
+
+      const abandonNoCoalition = () => {
+        setShowNoCoalitionModal(false);
+        setScreen('GAME');
+      };
+
+      if (screen === 'HOME') {
+        return (
+          <div className="sg-home">
+            <button onClick={() => setScreen('DEV_LOGIN')} className="sg-dev-btn" title="Dev Dashboard">⚙️</button>
+            <div style={{ textAlign: 'center' }}>
+              <span className="sg-home-badge">🏛</span>
+              <h1 className="sg-home-title">Coalition Builder</h1>
+              <div className="sg-home-divider"><span>◆◆◆</span></div>
+              <p className="sg-home-subtitle">Select a political landscape, adjust polling data, test electoral thresholds, and negotiate a governing majority.</p>
+              <button onClick={() => {
+                if (db['Israel'] && db['Israel']['2026 Polling Snapshot']) {
+                  const data = db['Israel']['2026 Polling Snapshot'];
+                  setSelectedCountry('Israel');
+                  setSelectedScenario('2026 Polling Snapshot');
+                  setTotalSeats(data.seats);
+                  setThreshold(data.threshold);
+                  setParties(JSON.parse(JSON.stringify(data.parties)));
+                }
+                setScreen('SETTINGS');
+              }} className="sg-enter-btn">
+                ⚔ Enter Parliament
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      if (screen === 'DEV_LOGIN') {
+        const checkPassword = () => {
+          if (devPassword === 'TessaEars') { setScreen('DEV_DASH'); setDevPassword(''); }
+          else { alert('Incorrect password'); }
+        };
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: '100vh', background: 'var(--bg)' }}>
+            <div className="sg-panel" style={{ width: '100%', maxWidth: '400px', padding: '2.5rem', textAlign: 'center' }}>
+              <h2 style={{ fontFamily: 'Cinzel, serif', fontSize: '1.2rem', letterSpacing: '0.12em', color: 'var(--gold-hi)', marginBottom: '1.5rem', textTransform: 'uppercase' }}>Developer Access</h2>
+              <input type="password" value={devPassword} onChange={(e) => setDevPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && checkPassword()} placeholder="Password" style={{ width: '100%', marginBottom: '1rem' }}/>
+              <div style={{ display: 'flex', gap: '0.75rem' }}>
+                <button onClick={() => setScreen('HOME')} className="sg-btn" style={{ flex: 1 }}>Cancel</button>
+                <button onClick={checkPassword} className="sg-btn sg-btn-gold" style={{ flex: 1 }}>Login</button>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (screen === 'DEV_DASH') {
+        return <DevDashboard db={db} setDb={setDb} setScreen={setScreen} />;
+      }
+
+      if (screen === 'SETTINGS') {
+        const handleScenarioChange = (country, scenario) => {
+          setSelectedCountry(country); setSelectedScenario(scenario);
+          if (country === 'Custom') {
+            setParties([{ id: 1, name: 'New Party', color: '#94a3b8', logo: '⬜', corePolicies: '', redLines: '', poll: 0, votes: 0 }]);
+            setTotalSeats(100); setThreshold(5); return;
+          }
+          if (db[country] && db[country][scenario]) {
+            const data = db[country][scenario];
+            setTotalSeats(data.seats); setThreshold(data.threshold); setParties(JSON.parse(JSON.stringify(data.parties)));
+          }
+        };
+
+        const updateParty = (id, field, value) => setParties(parties.map(p => p.id === id ? { ...p, [field]: value } : p));
+        const scenarioPolicyLibrary = selectedCountry && selectedScenario && db[selectedCountry] && db[selectedCountry][selectedScenario]
+          ? hydrateScenarioPolicyLibrary(db[selectedCountry][selectedScenario]).policyLibrary
+          : DEFAULT_POLICY_LIBRARY;
+
+        const togglePartySettingTag = (id, field, label) => {
+          setParties(parties.map(p => {
+            if (p.id !== id) return p;
+            const current = splitTagEntries(p[field]);
+            const hasTag = current.some(item => normalizeKey(item) === normalizeKey(label));
+            const next = hasTag
+              ? current.filter(item => normalizeKey(item) !== normalizeKey(label))
+              : [...current, label];
+            return { ...p, [field]: next.join(', ') };
+          }));
+        };
+
+        const addParty = () => {
+          const newId = parties.length ? Math.max(...parties.map(p => p.id)) + 1 : 1;
+          setParties([...parties, { id: newId, name: 'New Party', color: '#94a3b8', logo: '⬜', corePolicies: '', redLines: '', votes: 0, poll: 0 }]);
+        };
+        const removeParty = (id) => setParties(parties.filter(p => p.id !== id));
+
+        return (
+          <div className="sg-screen">
+            <div className="sg-page-header">
+              <div><span className="sg-step-badge">Phase I</span><h2 className="sg-page-title">Political Landscape</h2></div>
+              <button onClick={() => { setCoalition([]); setScreen('GAME'); setDecisions({}); }} className="sg-btn sg-btn-gold">Proceed to Election ⚔</button>
+            </div>
+            <div className="sg-panel" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1.5rem', marginBottom: '1.5rem' }}>
+              <div>
+                <label className="sg-label">Select Territory</label>
+                <select value={selectedCountry} onChange={(e) => { setSelectedCountry(e.target.value); setSelectedScenario(''); if (e.target.value === 'Custom') handleScenarioChange('Custom', 'Custom'); }} style={{ width: '100%', padding: '0.6rem 0.85rem' }}>
+                  <option value="">— Choose Country —</option>
+                  {Object.keys(db).map(key => <option key={key} value={key}>{key}</option>)}
+                  <option value="Custom">— Custom Empty Sandbox —</option>
+                </select>
+              </div>
+              <div style={{ opacity: (selectedCountry && selectedCountry !== 'Custom') ? 1 : 0.45, pointerEvents: (selectedCountry && selectedCountry !== 'Custom') ? 'auto' : 'none' }}>
+                <label className="sg-label">Load Scenario</label>
+                <select value={selectedScenario} onChange={(e) => handleScenarioChange(selectedCountry, e.target.value)} style={{ width: '100%', padding: '0.6rem 0.85rem' }}>
+                  <option value="">— Select Scenario —</option>
+                  {selectedCountry && db[selectedCountry] && Object.keys(db[selectedCountry]).map(key => <option key={key} value={key}>{key}</option>)}
+                </select>
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '1.5rem' }}>
+              {parties.map(party => (
+                <div key={party.id} className="sg-faction-card" style={{ borderColor: party.color }}>
+                  <div className="sg-faction-top">
+                    <div className="sg-faction-field">
+                      <label className="sg-label">Logo</label>
+                      <div style={{ width: '64px', height: '64px', display: 'flex', alignItems: 'center', justifyContent: 'center', border: '1px solid var(--border-hi)', borderRadius: '0.5rem', background: 'var(--bg-input)', padding: '0.35rem' }}>
+                        {renderLogo(party.logo, "max-h-10 max-w-full text-4xl")}
+                      </div>
+                      <div style={{ fontSize: '0.62rem', textTransform: 'uppercase', letterSpacing: '0.12em', color: 'var(--text-dim)', marginTop: '0.35rem' }}>Locked</div>
+                    </div>
+                    <div className="sg-faction-field" style={{ flex: 1, minWidth: '140px' }}>
+                      <label className="sg-label">Party Name</label>
+                      <input type="text" value={party.name} onChange={(e) => updateParty(party.id, 'name', e.target.value)} style={{ fontWeight: 700, width: '100%' }}/>
+                    </div>
+                    <div className="sg-faction-field">
+                      <label className="sg-label">Color</label>
+                      <input type="color" value={party.color} onChange={(e) => updateParty(party.id, 'color', e.target.value)} style={{ width: '60px', height: '34px', border: '1px solid var(--border-hi)', cursor: 'pointer', background: 'transparent', padding: '2px' }}/>
+                    </div>
+                    <div className="sg-faction-field">
+                      <label className="sg-label">Poll %</label>
+                      <input type="number" step="0.1" value={party.poll} onChange={(e) => { updateParty(party.id, 'poll', e.target.value); updateParty(party.id, 'votes', e.target.value); }} style={{ width: '78px', fontFamily: 'monospace', color: 'var(--gold-hi)' }}/>
+                    </div>
+                    <div className="sg-faction-field" style={{ marginLeft: 'auto' }}>
+                      <label className="sg-label">&nbsp;</label>
+                      <button onClick={() => removeParty(party.id)} className="sg-btn sg-btn-remove">✕ Remove</button>
+                    </div>
+                  </div>
+
+                </div>
+              ))}
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "1rem 0", borderTop: "1px solid var(--border-hi)", marginTop: "0.5rem" }}><button onClick={addParty} className="sg-btn">✚ Enlist New Party</button><button onClick={() => { setCoalition([]); setScreen('GAME'); setDecisions({}); }} className="sg-btn sg-btn-gold">Proceed to Election ⚔</button></div>
+          </div>
+        );
+      }
+
+      if (screen === 'GAME') {
+        const updateVotes = (id, val) => setParties(parties.map(p => p.id === id ? { ...p, votes: Number(val) } : p));
+        const toggleCoalition = (id) => setCoalition(prev => prev.includes(id) ? prev.filter(pId => pId !== id) : [...prev, id]);
+
+        return (
+          <div className="sg-screen">
+            <div className="flex justify-between items-center mb-6">
+              <h2 className="text-3xl font-bold">Step 2: Results & Negotiation</h2>
+              <button onClick={handleConfirmGovernment} className="bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-8 rounded shadow-lg transition-transform hover:scale-105">Confirm Government ➔</button>
+            </div>
+
+            {showNoCoalitionModal && (
+              <div className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4">
+                <div className="bg-slate-900 border border-slate-700 max-w-md w-full p-6 text-center">
+                  <h3 className="text-2xl font-bold mb-3 text-white">No Viable Coalition</h3>
+                  <p className="text-slate-300 mb-6">The coalition you have assembled does not reach a majority. You may abandon the attempt or return to coalition building and revise the arrangement.</p>
+                  <div className="flex justify-center gap-3">
+                    <button onClick={abandonNoCoalition} className="sg-btn">Return to Coalition</button>
+                    <button onClick={confirmNoCoalition} className="sg-btn sg-btn-danger">Give Up</button>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              <div className="lg:col-span-2 space-y-8">
+                <div className="sg-panel">
+                  <div className="grid grid-cols-2 gap-4 mb-6 bg-slate-50 p-4 rounded-lg border border-slate-200">
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1 text-sm uppercase">Total Seats</label>
+                      <input type="number" value={totalSeats} onChange={(e) => setTotalSeats(Number(e.target.value))} className="w-full p-2 border border-slate-300 rounded font-mono text-lg text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white"/>
+                    </div>
+                    <div>
+                      <label className="block font-bold text-slate-700 mb-1 text-sm uppercase">Threshold (%)</label>
+                      <input type="number" step="0.1" value={threshold} onChange={(e) => setThreshold(Number(e.target.value))} className="w-full p-2 border border-slate-300 rounded font-mono text-lg text-slate-800 focus:ring-2 focus:ring-blue-500 outline-none bg-white"/>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-between items-center mb-4">
+                    <h3 className="sg-game-section-title">Adjust Results</h3>
+                    <span className={`font-bold px-3 py-1 rounded text-sm ${totalRawVotes > 100.1 ? 'bg-red-100 text-red-700' : 'bg-slate-200 text-slate-700'}`}>Total Counted: {totalRawVotes.toFixed(1)}%</span>
+                  </div>
+
+                  <div className="space-y-3 overflow-y-auto pr-2 max-h-96">
+                    <div className="grid grid-cols-12 gap-2 text-xs font-bold text-gray-400 uppercase px-2">
+                      <div className="col-span-5">Party</div><div className="col-span-3 text-center">Base Poll</div><div className="col-span-4 text-right">Actual Result %</div>
+                    </div>
+                    {parties.map(party => {
+                      const diff = (party.votes - party.poll).toFixed(1);
+                      const eliminated = party.votes > 0 && party.votes < threshold;
+                      return (
+                        <div key={party.id} className={`grid grid-cols-12 gap-2 items-center p-3 rounded-lg border ${eliminated ? 'bg-red-50 border-red-200 opacity-70' : 'bg-white border-gray-200 shadow-sm'}`}>
+                          <div className="col-span-5 flex items-center">
+                            <span className="mr-3 flex items-center justify-center w-10 h-10">{renderLogo(party.logo, "max-w-full max-h-full text-3xl")}</span>
+                            <span className="font-bold truncate text-base" style={{ color: party.color }}>{party.name}</span>
+                          </div>
+                          <div className="col-span-3 text-center font-mono text-gray-400 text-sm">{party.poll}%</div>
+                          <div className="col-span-4 flex items-center justify-end relative">
+                            <input type="number" min="0" max="100" step="0.1" value={party.votes} onChange={(e) => updateVotes(party.id, e.target.value)} className="border border-gray-300 rounded px-2 py-1 w-20 text-right font-mono bg-white focus:ring-2 focus:ring-blue-400 outline-none" />
+                            <div className={`absolute -right-6 w-5 text-right text-xs font-bold ${diff > 0 ? 'text-green-500' : diff < 0 ? 'text-red-500' : 'text-transparent'}`}>{diff > 0 ? '▲' : '▼'}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-8">
+                <div className="sg-panel">
+                  <div className="flex justify-between items-center mb-6">
+                    <h3 className="sg-game-section-title">Parliament Map</h3>
+                    <div className="bg-gray-100 rounded-lg p-1 flex text-sm font-bold shadow-inner">
+                      <button onClick={() => setDisplayMode('seats')} className={`px-4 py-1.5 rounded-md transition-colors ${displayMode === 'seats' ? 'bg-white shadow text-blue-600' : 'text-gray-500'}`}>Seats</button>
+                      <button onClick={() => setDisplayMode('percentage')} className={`px-4 py-1.5 rounded-md transition-colors ${displayMode === 'percentage' ? 'bg-white shadow text-blue-600' : 'text-gray-500'}`}>%</button>
+                    </div>
+                  </div>
+
+                  <div className="w-full h-14 bg-gray-200 rounded-xl overflow-hidden flex relative mb-8 shadow-inner border border-gray-300">
+                    <div className="absolute left-1/2 top-0 bottom-0 w-1 bg-slate-900 z-10 shadow-[0_0_5px_rgba(0,0,0,0.5)]"></div>
+                    {seatShares.map(party => (
+                      <div key={party.id} style={{ width: `${party.seatPercentage}%`, backgroundColor: party.color }} className="h-full flex items-center justify-center text-white text-xs font-bold border-r border-white/20 transition-all duration-300 hover:opacity-90">
+                        {party.seatPercentage > 4 ? (displayMode === 'seats' ? party.seats : party.seatPercentage.toFixed(1) + '%') : ''}
+                      </div>
+                    ))}
+                  </div>
+
+                  <h3 className="text-lg font-bold mb-3 text-gray-700">Negotiating Table</h3>
+                  <div className="flex flex-wrap gap-3 mb-6">
+                    {seatShares.map(party => (
+                      <button key={party.id} onClick={() => toggleCoalition(party.id)} className="px-4 py-2 rounded-lg border-2 font-bold transition-all shadow-sm flex items-center transform hover:-translate-y-1" style={{ backgroundColor: coalition.includes(party.id) ? party.color : 'white', borderColor: party.color, color: coalition.includes(party.id) ? 'white' : 'black' }}>
+                        <span className="mr-2 flex items-center justify-center w-7 h-7">{renderLogo(party.logo, "max-w-full max-h-full text-2xl")}</span>{party.name}
+                        <span className="ml-3 px-2 py-0.5 rounded-md text-xs font-mono" style={{ backgroundColor: coalition.includes(party.id) ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.06)' }}>{displayMode === 'seats' ? party.seats : party.seatPercentage.toFixed(1) + '%'}</span>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className={`mt-auto p-5 rounded-xl text-center border-2 transition-colors duration-300 ${isMajority ? 'bg-green-50 border-green-500 shadow-[0_0_15px_rgba(34,197,94,0.2)]' : 'bg-red-50 border-red-300'}`}>
+                    <h4 className={`text-2xl font-bold mb-1 ${isMajority ? 'text-green-700' : 'text-red-700'}`}>{isMajority ? 'Majority Government Formed' : 'Hung Parliament'}</h4>
+                    <p className="text-lg font-mono font-semibold text-slate-800 mt-2">{coalitionSeats} / {majorityTarget} Seats Required</p>
+                  </div>
+
+                  {conflicts.length > 0 && (
+                    <div className="mt-4 p-4 bg-amber-50 border-l-4 border-amber-500 rounded-r-lg shadow-sm">
+                      <h4 className="font-bold text-amber-800 mb-2 flex items-center"><span className="mr-2 text-xl">⚠️</span> Ideological Conflict Detected</h4>
+                      <ul className="list-disc pl-8 text-sm text-amber-900 space-y-1 font-medium">{conflicts.map((c, idx) => <li key={idx}>{c}</li>)}</ul>
+                    </div>
+                  )}
+                </div>
+
+                <CompatibilityMatrix seatShares={seatShares} conflictConditions={activeScenarioData.conflictConditions} policyLibrary={activeScenarioData.policyLibrary} />
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      if (screen === 'NEGOTIATION') {
+        return <NegotiationPhase seatShares={seatShares} coalition={coalition} coalitionMembers={coalitionMembers} handleDecision={handleNegotiationDecision} decisions={decisions} db={db} selectedCountry={selectedCountry} selectedScenario={selectedScenario} />;
+      }
+
+      if (screen === 'SUMMARY') {
+        return (
+          <div className="max-w-4xl mx-auto p-6 py-12">
+            <h2 className="text-4xl font-bold mb-2 text-center">Final Government Data</h2>
+            <p className="text-gray-600 text-center mb-8">Your coalition agreement and negotiated policies</p>
+
+            <div className="bg-white p-8 rounded-2xl shadow-xl mb-8 text-left border border-gray-100">
+              <div className="flex justify-between border-b border-gray-200 pb-4 mb-6">
+                <span className="text-xl font-semibold text-gray-600">Government Classification:</span>
+                <span className={`text-xl font-bold ${isMajority ? 'text-green-600' : 'text-red-600'}`}>{isMajority ? 'Majority (Stable)' : 'Minority (Fragile)'}</span>
+              </div>
+
+              <div className="mb-8">
+                <h4 className="font-bold text-gray-500 uppercase text-xs tracking-wider mb-3">Coalition Members</h4>
+                <div className="flex flex-wrap gap-2">
+                  {coalitionMembers.map(p => (
+                    <span key={p.id} className="px-4 py-2 rounded-lg text-white font-semibold shadow-sm flex items-center" style={{ backgroundColor: p.color }}>
+                      <span className="mr-2 flex items-center justify-center w-7 h-7">{renderLogo(p.logo, "max-w-full max-h-full text-2xl invert brightness-0 filter")}</span> {p.name} <span className="ml-2 opacity-75 font-mono text-sm">({p.seats})</span>
+                    </span>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mb-8 bg-gray-50 p-4 rounded-xl border border-gray-200">
+                <h4 className="font-bold text-gray-500 uppercase text-xs tracking-wider mb-3">Parliamentary Control</h4>
+                <div className="w-full bg-gray-300 rounded-full h-5 mb-3 overflow-hidden flex relative shadow-inner">
+                  <div className="absolute left-1/2 top-0 bottom-0 w-0.5 bg-black z-10"></div>
+                  <div className="h-5 transition-all duration-1000" style={{ width: `${coalitionPercentage}%`, backgroundColor: '#3b82f6' }}></div>
+                </div>
+                <div className="flex justify-between items-center text-sm font-bold"><span className="text-gray-500">{totalSeats} Total Seats</span><span className="text-blue-600 text-lg">{coalitionSeats} Seats ({coalitionPercentage.toFixed(1)}%)</span></div>
+              </div>
+
+              {Object.keys(decisions).length > 0 && (
+                <div className="mb-8">
+                  <h4 className="font-bold text-gray-500 uppercase text-xs tracking-wider mb-3">Negotiated Decisions</h4>
+                  <div className="space-y-2">
+                    {Object.entries(decisions).map(([conflictId, decision]) => {
+                      // Find the conflict to look up its override (if any)
+                      const allConflicts = buildCoalitionConflicts(coalitionMembers, activeScenarioData.conflictConditions, activeScenarioData.policyLibrary);
+                      const matchedConflict = allConflicts.find(c => c.id === conflictId);
+                      const ov = matchedConflict ? findConflictOverride(matchedConflict, activeScenarioData.conflictOverrides) : null;
+                      const automaticBehavior = matchedConflict ? getPolicyRuleMatch(matchedConflict, activeScenarioData.policyLibrary) : null;
+                      const optionPool = ov?.resolutionOptions?.length
+                        ? ov.resolutionOptions
+                        : automaticBehavior?.resolutionOptions?.length
+                          ? automaticBehavior.resolutionOptions
+                          : (activeScenarioData.resolutionOptions || []);
+                      const option = optionPool.find(o => o.id === decision);
+                      return (
+                      <div key={conflictId} className="coalition-agreement-item" style={{ borderColor: '#3b82f6' }}>
+                        <span className="text-lg">✓</span>
+                        <div>
+                          <div className="font-semibold text-gray-800">Decision Made</div>
+                          <div className="agreement-decision">
+                            {option?.summaryText || option?.label || decision}
+                          </div>
+                        </div>
+                      </div>
+                    )})}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <button onClick={resetGame} className="w-full bg-slate-800 hover:bg-slate-900 text-white font-bold py-4 px-10 rounded-full shadow-lg transition-transform hover:-translate-y-1 text-lg">↺ Start New Election</button>
+          </div>
+        );
+      }
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
