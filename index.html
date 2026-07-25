@@ -924,10 +924,14 @@
       };
 
       const handleSaveToGitHub = async () => {
+        const exportDb = buildExportDb(db);
+        const cfg = window.GITHUB_DB_CONFIG || {};
         const payload = {
-          db: buildExportDb(db),
+          db: exportDb,
           message: `Update coalition database from editor ${new Date().toISOString()}`,
-          path: (window.GITHUB_DB_CONFIG && window.GITHUB_DB_CONFIG.filePath) || 'data/default-db.json'
+          path: cfg.filePath || 'data/default-db.json',
+          githubRepository: cfg.repository || (cfg.owner && cfg.repo ? `${cfg.owner}/${cfg.repo}` : ''),
+          githubBranch: cfg.branch || ''
         };
 
         setSaveStatus('Saving...');
@@ -942,11 +946,22 @@
           const data = await response.json().catch(() => ({}));
           if (!response.ok) throw new Error(data.error || 'Save failed');
 
-          localStorage.setItem('coalitionDb', JSON.stringify(buildExportDb(db)));
+          localStorage.setItem('coalitionDb', JSON.stringify(exportDb));
           setSaveStatus(`Saved to ${payload.path}`);
         } catch (error) {
-          localStorage.setItem('coalitionDb', JSON.stringify(buildExportDb(db)));
-          setSaveStatus(`Saved locally. Deploy the save endpoint to push to GitHub automatically. ${error.message}`);
+          const fileName = (payload.path || 'default-db.json').split('/').pop() || 'default-db.json';
+          const blob = new Blob([JSON.stringify(exportDb, null, 2) + '\n'], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = fileName;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          URL.revokeObjectURL(url);
+
+          localStorage.setItem('coalitionDb', JSON.stringify(exportDb));
+          setSaveStatus(`Downloaded ${fileName}. Upload it to GitHub manually, or deploy to a host with server-side secrets for direct repo saves.`);
         }
       };
 

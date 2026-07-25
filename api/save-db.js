@@ -5,7 +5,13 @@ export default async function handler(req, res) {
     return;
   }
 
-  const { db, message = 'Update coalition database', path = 'data/default-db.json' } = req.body || {};
+  const {
+    db,
+    message = 'Update coalition database',
+    path = 'data/default-db.json',
+    githubRepository,
+    githubBranch
+  } = req.body || {};
 
   if (!db || typeof db !== 'object') {
     res.status(400).json({ error: 'Missing database payload' });
@@ -16,22 +22,36 @@ export default async function handler(req, res) {
     const { Octokit } = await import('octokit');
     const token = process.env.GITHUB_TOKEN;
     if (!token) {
-      res.status(500).json({ error: 'Missing GITHUB_TOKEN' });
+      res.status(500).json({ error: 'Missing GITHUB_TOKEN. Set it as a secret environment variable in your hosting platform.' });
       return;
     }
 
     const octokit = new Octokit({ auth: token });
-    const [owner, repo] = (process.env.GITHUB_REPOSITORY || 'Doronshorer/coalition-builder').split('/');
-    const branch = process.env.GITHUB_BRANCH || 'main';
+    const repository = githubRepository || process.env.GITHUB_REPOSITORY || 'Doronshorer/coalition-builder';
+    const branch = githubBranch || process.env.GITHUB_BRANCH || 'main';
+    const [owner, repo] = repository.split('/');
+
+    if (!owner || !repo) {
+      res.status(400).json({ error: 'Invalid GitHub repository format. Expected owner/repo.' });
+      return;
+    }
 
     const content = Buffer.from(JSON.stringify(db, null, 2) + '\n', 'utf8').toString('base64');
 
-    const { data: existingFile } = await octokit.rest.repos.getContent({
-      owner,
-      repo,
-      path,
-      ref: branch
-    });
+    let sha;
+    try {
+      const { data: existingFile } = await octokit.rest.repos.getContent({
+        owner,
+        repo,
+        path,
+        ref: branch
+      });
+      sha = existingFile?.sha;
+    } catch (contentError) {
+      if (contentError?.status !== 404) {
+        throw contentError;
+      }
+    }
 
     await octokit.rest.repos.createOrUpdateFileContents({
       owner,
@@ -39,12 +59,13 @@ export default async function handler(req, res) {
       path,
       message,
       content,
-      sha: existingFile?.sha,
+      sha,
       branch
     });
 
-    res.status(200).json({ ok: true, path, message });
+    res.status(200).json({ ok: true, path, message, repository, branch });
   } catch (error) {
-    res.status(500).json({ error: error.message || 'Failed to save database' });
+    const message = error?.message || 'Failed to save database';
+    res.status(500).json({ error: message });
   }
 }
