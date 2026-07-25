@@ -923,6 +923,24 @@
         updateDb(newDb);
       };
 
+      const getStoredGitHubToken = () => {
+        const configuredToken = window.GITHUB_DB_CONFIG && window.GITHUB_DB_CONFIG.token;
+        if (configuredToken) return configuredToken;
+        try {
+          return localStorage.getItem('coalitionGithubToken') || '';
+        } catch (error) {
+          return '';
+        }
+      };
+
+      const persistGitHubToken = (token) => {
+        try {
+          localStorage.setItem('coalitionGithubToken', token);
+        } catch (error) {
+          // Ignore storage failures and continue.
+        }
+      };
+
       const handleSaveToGitHub = async () => {
         const exportDb = buildExportDb(db);
         const cfg = window.GITHUB_DB_CONFIG || {};
@@ -931,37 +949,70 @@
           message: `Update coalition database from editor ${new Date().toISOString()}`,
           path: cfg.filePath || 'data/default-db.json',
           githubRepository: cfg.repository || (cfg.owner && cfg.repo ? `${cfg.owner}/${cfg.repo}` : ''),
-          githubBranch: cfg.branch || ''
+          githubBranch: cfg.branch || 'main'
         };
 
         setSaveStatus('Saving...');
 
         try {
-          const endpoint = window.DB_SAVE_ENDPOINT || '/api/save-db';
-          const response = await fetch(endpoint, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+          let token = getStoredGitHubToken();
+          if (!token) {
+            const enteredToken = window.prompt('Paste your GitHub personal access token (classic PAT with repo or public_repo scope):');
+            if (!enteredToken) {
+              setSaveStatus('Save cancelled. No token provided.');
+              return;
+            }
+            token = enteredToken.trim();
+            persistGitHubToken(token);
+          }
+
+          const owner = cfg.owner || 'Doronshorer';
+          const repo = cfg.repo || 'coalition-builder';
+          const branch = payload.githubBranch || 'main';
+          const targetPath = encodeURIComponent(payload.path);
+          const url = `https://api.github.com/repos/${owner}/${repo}/contents/${targetPath}`;
+
+          let sha = '';
+          try {
+            const existingResponse = await fetch(url, {
+              headers: {
+                'Accept': 'application/vnd.github+json',
+                'Authorization': `Bearer ${token}`,
+                'X-GitHub-Api-Version': '2022-11-28'
+              }
+            });
+            if (existingResponse.ok) {
+              const existingData = await existingResponse.json().catch(() => ({}));
+              sha = existingData.sha || '';
+            }
+          } catch (lookupError) {
+            // Ignore lookup errors and let the PUT call create or update the file.
+          }
+
+          const response = await fetch(url, {
+            method: 'PUT',
+            headers: {
+              'Accept': 'application/vnd.github+json',
+              'Authorization': `Bearer ${token}`,
+              'X-GitHub-Api-Version': '2022-11-28',
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              message: payload.message,
+              content: btoa(unescape(encodeURIComponent(JSON.stringify(exportDb, null, 2) + '\n'))),
+              branch,
+              sha: sha || undefined
+            })
           });
           const data = await response.json().catch(() => ({}));
-          if (!response.ok) throw new Error(data.error || 'Save failed');
+          if (!response.ok) throw new Error(data.message || 'Save failed');
 
+          window.INITIAL_DB = exportDb;
           localStorage.setItem('coalitionDb', JSON.stringify(exportDb));
           setSaveStatus(`Saved to ${payload.path}`);
         } catch (error) {
-          const fileName = (payload.path || 'default-db.json').split('/').pop() || 'default-db.json';
-          const blob = new Blob([JSON.stringify(exportDb, null, 2) + '\n'], { type: 'application/json' });
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.download = fileName;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          URL.revokeObjectURL(url);
-
           localStorage.setItem('coalitionDb', JSON.stringify(exportDb));
-          setSaveStatus(`Downloaded ${fileName}. Upload it to GitHub manually, or deploy to a host with server-side secrets for direct repo saves.`);
+          setSaveStatus(`Save failed: ${error.message}`);
         }
       };
 
@@ -1484,6 +1535,12 @@
       useEffect(() => {
         const loadDb = async () => {
           await window.loadInitialDb();
+          const remoteDb = window.INITIAL_DB || {};
+          if (remoteDb && typeof remoteDb === 'object' && Object.keys(remoteDb).length > 0) {
+            setDb(remoteDb);
+            return;
+          }
+
           const saved = localStorage.getItem('coalitionDb');
           if (saved) {
             try {
@@ -1493,7 +1550,7 @@
               console.warn('Could not parse local DB snapshot', error);
             }
           }
-          setDb(window.INITIAL_DB || {});
+          setDb({});
         };
         loadDb();
       }, []);
